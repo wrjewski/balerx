@@ -1,0 +1,473 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:balerx:schemas:security-event:1.0.0",
+  "title": "SecurityEventV1",
+  "description": "Canonical Balerx Gate security event envelope, version 1.0.0.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "eventId",
+    "tenantId",
+    "observedAt",
+    "receivedAt",
+    "source",
+    "category",
+    "action",
+    "outcome",
+    "attributes"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "description": "Semantic version of this event contract.",
+      "type": "string",
+      "const": "1.0.0"
+    },
+    "eventId": {
+      "$ref": "#/$defs/UuidV7"
+    },
+    "tenantId": {
+      "$ref": "#/$defs/Uuid"
+    },
+    "observedAt": {
+      "description": "RFC 3339 timestamp at which the source observed the activity.",
+      "type": "string",
+      "format": "date-time"
+    },
+    "receivedAt": {
+      "description": "RFC 3339 timestamp at which Balerx Gate received the event.",
+      "type": "string",
+      "format": "date-time"
+    },
+    "source": {
+      "$ref": "#/$defs/EventSource"
+    },
+    "category": {
+      "$ref": "#/$defs/EventCategory"
+    },
+    "action": {
+      "$ref": "#/$defs/EventAction"
+    },
+    "outcome": {
+      "$ref": "#/$defs/EventOutcome"
+    },
+    "device": {
+      "$ref": "#/$defs/DeviceContext"
+    },
+    "identity": {
+      "$ref": "#/$defs/IdentityContext"
+    },
+    "process": {
+      "$ref": "#/$defs/ProcessContext"
+    },
+    "network": {
+      "$ref": "#/$defs/NetworkContext"
+    },
+    "agent": {
+      "$ref": "#/$defs/AgentContext"
+    },
+    "resource": {
+      "$ref": "#/$defs/ResourceContext"
+    },
+    "attributes": {
+      "$ref": "#/$defs/Attributes"
+    },
+    "enrichment": {
+      "$ref": "#/$defs/EnrichmentContext"
+    },
+    "integrity": {
+      "$ref": "#/$defs/IntegrityContext"
+    }
+  },
+  "$defs": {
+    "Uuid": {
+      "title": "Uuid",
+      "type": "string",
+      "format": "uuid"
+    },
+    "UuidV7": {
+      "title": "UuidV7",
+      "description": "Lowercase RFC 9562 UUID version 7.",
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "SemanticVersion": {
+      "title": "SemanticVersion",
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+    },
+    "EventSourceType": {
+      "title": "EventSourceType",
+      "type": "string",
+      "enum": ["endpoint", "integration", "platform"]
+    },
+    "EventSource": {
+      "title": "EventSource",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "provider", "collector", "version"],
+      "properties": {
+        "type": {
+          "$ref": "#/$defs/EventSourceType"
+        },
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "collector": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "version": {
+          "$ref": "#/$defs/SemanticVersion"
+        }
+      }
+    },
+    "EventCategory": {
+      "title": "EventCategory",
+      "type": "string",
+      "enum": [
+        "agent",
+        "authentication",
+        "configuration",
+        "device",
+        "identity",
+        "network",
+        "process",
+        "repository",
+        "sensor"
+      ]
+    },
+    "EventAction": {
+      "title": "EventAction",
+      "type": "string",
+      "enum": [
+        "agent.discovered",
+        "agent.started",
+        "agent.stopped",
+        "agent.classified",
+        "agent.boundary_violation",
+        "agent.behavior_anomaly",
+        "authentication.succeeded",
+        "authentication.failed",
+        "configuration.changed",
+        "device.heartbeat",
+        "identity.credential_changed",
+        "network.connection_observed",
+        "process.started",
+        "process.stopped",
+        "repository.accessed",
+        "repository.pushed",
+        "sensor.health_changed"
+      ]
+    },
+    "EventOutcome": {
+      "title": "EventOutcome",
+      "type": "string",
+      "enum": ["success", "failure", "unknown", "not_applicable"]
+    },
+    "DeviceContext": {
+      "title": "DeviceContext",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "platform"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "hostname": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 253
+        },
+        "platform": {
+          "type": "string",
+          "enum": ["windows"]
+        },
+        "osVersion": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "sensorVersion": {
+          "$ref": "#/$defs/SemanticVersion"
+        }
+      }
+    },
+    "IdentityType": {
+      "title": "IdentityType",
+      "type": "string",
+      "enum": ["human", "device", "service", "agent", "integration", "unknown"]
+    },
+    "IdentityContext": {
+      "title": "IdentityContext",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "provider", "subject"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "type": {
+          "$ref": "#/$defs/IdentityType"
+        },
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "subject": {
+          "description": "Provider-scoped, non-secret subject identifier.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        }
+      }
+    },
+    "ExecutableContext": {
+      "title": "ExecutableContext",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 260
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 32768
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "publisher": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "signed": {
+          "type": "boolean"
+        },
+        "product": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      }
+    },
+    "ProcessContext": {
+      "title": "ProcessContext",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pid", "executable"],
+      "properties": {
+        "pid": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "parentPid": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        },
+        "executable": {
+          "$ref": "#/$defs/ExecutableContext"
+        },
+        "userSubject": {
+          "description": "Locally stable, non-secret user identifier.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        }
+      }
+    },
+    "NetworkContext": {
+      "title": "NetworkContext",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["direction", "protocol"],
+      "properties": {
+        "direction": {
+          "type": "string",
+          "enum": ["outbound", "inbound", "unknown"]
+        },
+        "protocol": {
+          "type": "string",
+          "enum": ["tcp", "udp", "other"]
+        },
+        "remoteAddress": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255
+        },
+        "remotePort": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "domain": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 253
+        },
+        "processId": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 4294967295
+        }
+      }
+    },
+    "AgentClassification": {
+      "title": "AgentClassification",
+      "type": "string",
+      "enum": [
+        "CANDIDATE",
+        "VERIFIED_SUPPORTED_AGENT",
+        "USER_REGISTERED",
+        "RESTRICTED",
+        "DISABLED",
+        "UNCLASSIFIED"
+      ]
+    },
+    "AgentContext": {
+      "title": "AgentContext",
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "definitionId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "classification": {
+          "$ref": "#/$defs/AgentClassification"
+        }
+      }
+    },
+    "ResourceType": {
+      "title": "ResourceType",
+      "type": "string",
+      "enum": ["repository", "service", "destination", "credential", "configuration", "other"]
+    },
+    "ResourceContext": {
+      "title": "ResourceContext",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id"],
+      "properties": {
+        "type": {
+          "$ref": "#/$defs/ResourceType"
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "provider": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        }
+      }
+    },
+    "JsonValue": {
+      "title": "JsonValue",
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "string"
+        },
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/JsonValue"
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/JsonValue"
+          }
+        }
+      ]
+    },
+    "Attributes": {
+      "title": "Attributes",
+      "description": "Source-specific non-secret extension data.",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/JsonValue"
+      }
+    },
+    "EnrichmentContext": {
+      "title": "EnrichmentContext",
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "correlationId": {
+          "$ref": "#/$defs/Uuid"
+        },
+        "labels": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "attributes": {
+          "$ref": "#/$defs/Attributes"
+        }
+      }
+    },
+    "IntegrityContext": {
+      "title": "IntegrityContext",
+      "type": "object",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "properties": {
+        "idempotencyKey": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}

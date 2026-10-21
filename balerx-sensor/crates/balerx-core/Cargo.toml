@@ -1,0 +1,30 @@
+[package]
+name = "balerx-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Core types and detection logic for Balerx Gate scanner"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+toml.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+uuid.workspace = true
+regex.workspace = true
+fancy-regex.workspace = true
+once_cell.workspace = true
+sysinfo.workspace = true
+walkdir.workspace = true
+glob.workspace = true
+tracing.workspace = true
+dirs.workspace = true
+hostname.workspace = true
+
+[lints]
+workspace = true

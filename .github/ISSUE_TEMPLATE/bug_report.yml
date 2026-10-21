@@ -1,0 +1,47 @@
+name: Bug report
+description: A defect in the balerx scanner, schema, or docs
+title: 'bug: '
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not paste live secrets, tokens, or production configuration.
+        Security reports go through private vulnerability reporting, not this form.
+  - type: input
+    id: version
+    attributes:
+      label: Scanner version
+      description: Output of `balerx --version`, or the git revision you built.
+      placeholder: 0.1.0
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: Ubuntu 24.04 x86_64
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command
+      description: The balerx command you ran. Omit API keys.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened
+      description: Redact any secret values before pasting output.
+    validations:
+      required: true

@@ -1,0 +1,7 @@
+balerx-sensor/target/
+target/
+*.pem
+*.key
+*.p12
+.env
+.env.*

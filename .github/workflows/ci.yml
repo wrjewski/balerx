@@ -1,0 +1,93 @@
+name: CI
+
+on:
+  pull_request:
+    paths:
+      - 'balerx-sensor/**'
+      - 'packages/event-schema/**'
+      - 'docs/**'
+      - 'README.md'
+      - 'SECURITY.md'
+      - 'install.sh'
+      - 'install.ps1'
+      - 'LICENSE'
+      - 'NOTICE'
+      - '.gitleaks.toml'
+      - '.github/workflows/ci.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'balerx-sensor/**'
+      - 'packages/event-schema/**'
+      - 'docs/**'
+      - 'README.md'
+      - 'SECURITY.md'
+      - 'install.sh'
+      - 'install.ps1'
+      - 'LICENSE'
+      - 'NOTICE'
+      - '.gitleaks.toml'
+      - '.github/workflows/ci.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rust:
+    name: Rust / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    defaults:
+      run:
+        working-directory: balerx-sensor
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2.8.2
+        with:
+          workspaces: balerx-sensor
+
+      - name: Check formatting
+        if: runner.os == 'Linux'
+        run: cargo fmt --all --check
+
+      - name: Run Clippy with warnings denied
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Run locked tests
+        run: cargo test --locked
+
+  secrets:
+    name: Secrets / gitleaks
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Scan the tree with the documented-fixture allowlist
+        uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITLEAKS_ENABLE_COMMENTS: 'false'
+          GITLEAKS_CONFIG: .gitleaks.toml

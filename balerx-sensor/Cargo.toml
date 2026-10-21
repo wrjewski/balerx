@@ -1,0 +1,61 @@
+[workspace]
+members = [
+    "crates/balerx-core",
+    "crates/balerx-cli",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "Apache-2.0"
+repository = "https://github.com/wrjewski/balerx"
+
+[workspace.dependencies]
+# CLI and output
+clap = { version = "=4.4.18", features = ["derive", "cargo"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+toml = "0.8"
+
+# Cross-platform system info
+sysinfo = "0.32"
+
+# Logging
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "json"] }
+
+# Error handling
+anyhow = "1.0"
+thiserror = "1.0"
+
+# Dates and times
+chrono = { version = "0.4", features = ["serde"] }
+
+# UUIDs
+uuid = { version = "=1.10.0", features = ["v4", "v7", "serde"] }
+
+# Regex for secret detection
+regex = "1.11"
+fancy-regex = "0.14"
+once_cell = "1.20"
+
+# HTML templating
+askama = "0.12"
+
+# File system
+walkdir = "2.5"
+glob = "0.3"
+dirs = "5.0"
+hostname = "0.4"
+# 3.2 keeps rustls with webpki-roots 1.x (RUSTSEC-2026-0381) and rustc 1.71.
+ureq = { version = "=3.2.1", default-features = false, features = ["rustls", "json", "gzip"] }
+
+[workspace.lints.rust]
+unsafe_code = "warn"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"

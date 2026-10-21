@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "aws": {
+      "command": "npx",
+      "args": ["-y", "mcp-server-aws"],
+      "env": {
+        "AWS_ACCESS_KEY_ID": "not-a-provider-key",
+        "AWS_SECRET_ACCESS_KEY": "not-a-provider-key"
+      }
+    }
+  }
+}

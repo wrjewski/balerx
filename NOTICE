@@ -1,0 +1,11 @@
+Balerx Gate scanner
+Copyright 2026 Walter Andrzejewski
+
+This product includes software developed by Walter Andrzejewski.
+
+Canary files and tests use synthetic values joined from short fragments
+at runtime. They are not real credentials. See
+balerx-sensor/tests/fixtures/README.md.
+
+Third-party crates are downloaded from crates.io when you build and
+remain under their own licenses. This tree does not vendor those crates.

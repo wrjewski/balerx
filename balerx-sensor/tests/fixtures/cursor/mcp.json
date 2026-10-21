@@ -1,0 +1,32 @@
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+    },
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {
+        "GITHUB_TOKEN": "not-a-provider-token"
+      }
+    },
+    "unpinned-package": {
+      "command": "npx",
+      "args": ["-y", "dangerous-mcp-server"]
+    },
+    "latest-tag": {
+      "command": "npx",
+      "args": ["-y", "some-package@latest"]
+    },
+    "plain-http": {
+      "command": "node",
+      "args": ["server.js"],
+      "url": "http://example.com/mcp"
+    },
+    "broad-filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/"]
+    }
+  }
+}

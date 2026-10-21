@@ -1,0 +1,18 @@
+title = "Balerx Gate public scanner"
+
+[extend]
+useDefault = true
+
+# Provider-shaped keys are not stored in this tree. The entries below are
+# labeled canary words that are not access keys. A new credential still fails.
+[allowlist]
+description = "Labeled canary words that are not provider keys"
+regexTarget = "secret"
+regexes = [
+    '''CanarySecretKeyNotRealDoNotUse123''',
+    '''balerx_canary_token_fake_xyz789''',
+    '''balerx_canary_fake_token_abcd1234567890_not_real''',
+    '''fake-password-1234''',
+    '''Fake/Canary/Key/NotReal''',
+    '''secret123''',
+]

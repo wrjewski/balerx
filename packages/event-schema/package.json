@@ -1,0 +1,22 @@
+{
+  "name": "@balerx/event-schema",
+  "version": "0.0.0",
+  "private": true,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "generate": "node scripts/generate-types.mjs && prettier --write src/generated/security-event-v1.ts",
+    "build": "pnpm generate && tsc --project tsconfig.json",
+    "test": "pnpm build && node --test test/*.test.mjs",
+    "lint": "eslint .",
+    "typecheck": "tsc --project tsconfig.json --noEmit",
+    "clean": "rimraf dist coverage .turbo"
+  },
+  "dependencies": {
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1"
+  },
+  "devDependencies": {
+    "json-schema-to-typescript": "16.0.0"
+  }
+}
