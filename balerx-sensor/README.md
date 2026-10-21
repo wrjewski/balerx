@@ -16,7 +16,7 @@ Nothing is uploaded unless you run `balerx upload` or `balerx policy pull` with 
 
 ## Install
 
-Supported platforms are Windows, macOS, and Linux. Windows is the primary agent platform; macOS and Linux use the same commands. Prebuilt binaries are not published yet. They arrive with the `v0.1.0` GitHub Release. Until that tag exists, build from source. Do not download a release archive: there is nothing there yet, and `install.sh` / `install.ps1` exit with an error instead of installing a binary.
+Supported platforms are Windows, macOS, and Linux. Windows is the primary agent platform; macOS and Linux use the same commands. Prebuilt binaries are GitHub Releases. The current scanner version is 0.1.2.
 
 ### Build from source
 
@@ -42,11 +42,11 @@ cargo build --locked --release
 .\target\release\balerx.exe --version
 ```
 
-`balerx 0.1.0` is the expected first line. Add `target/release` to your `PATH`, or copy the binary to a directory already on `PATH`.
+`balerx 0.1.2` is the expected first line. Add `target/release` to your `PATH`, or copy the binary to a directory already on `PATH`.
 
-### Prebuilt binary, after v0.1.0
+### Prebuilt binary
 
-`BALERX_REPO` defaults to `wrjewski/balerx`. The scripts download `https://github.com/wrjewski/balerx/releases/latest/download/` and check `SHA256SUMS` before installing. There is no release until the `v0.1.0` tag, so the scripts print the `cargo install` command above and exit.
+`BALERX_REPO` defaults to `wrjewski/balerx`. The scripts download `https://github.com/wrjewski/balerx/releases/latest/download/` and check `SHA256SUMS` before installing. If that checksum is missing, they print the `cargo install` command above and exit.
 
 Linux or macOS, into `$HOME/.local/bin`:
 
@@ -316,7 +316,7 @@ The activity log is `activity.jsonl` under the OS local data directory:
 
 **Proxy.** `balerx scan` does not use the network. `balerx upload` and `balerx policy pull` use the first of `ALL_PROXY`, `HTTPS_PROXY`, and `HTTP_PROXY` (lowercase names work too). `NO_PROXY` skips matching hosts. The Windows system proxy setting is not read. A proxy that refuses the connection fails the command with `Upload failed:` or `Policy pull failed:`.
 
-**`install.sh` says there is no release.** Expected until the `v0.1.0` tag. Build from source.
+**`install.sh` says there is no release.** The checksum download failed. Build from source with the `cargo install` command above.
 
 **Hooks did not fire.** `balerx guard install claude-code` writes `~/.claude.json`. `balerx guard install cursor` writes `~/.cursor/hooks.json`. Re-open the agent after installing.
 
