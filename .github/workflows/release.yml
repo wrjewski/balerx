@@ -71,7 +71,10 @@ jobs:
             cp "${profile}/balerx.exe" "${stage}/balerx.exe"
             archive="dist/balerx-${TARGET}.zip"
             # windows-latest bash uses bsdtar, which writes zip when -a sees a .zip name.
-            (cd "${stage}" && tar -a -cf "${GITHUB_WORKSPACE}/${archive}" balerx.exe LICENSE NOTICE)
+            # An absolute D:\ archive path makes bsdtar treat the drive letter as a remote host.
+            archive_u="$(cygpath -u "${GITHUB_WORKSPACE}/${archive}")"
+            stage_u="$(cygpath -u "${stage}")"
+            tar -a -cf "${archive_u}" --directory "${stage_u}" balerx.exe LICENSE NOTICE
           else
             cp "${profile}/balerx" "${stage}/balerx"
             archive="dist/balerx-${TARGET}.tar.gz"
@@ -151,4 +154,4 @@ jobs:
           set -euo pipefail
           gh release create "${GITHUB_REF_NAME}" "${stage}"/* \
             --title "${GITHUB_REF_NAME}" \
-            --notes "Balerx Gate scanner ${GITHUB_REF_NAME}. Installers download these archives from releases/latest/download and check SHA256SUMS. The SBOM is balerx.spdx.json."
+            --notes "Balerx Gate scanner ${GITHUB_REF_NAME}. Release binaries are unsigned. Installers download these archives from releases/latest/download and check SHA256SUMS. The SBOM is balerx.spdx.json."
