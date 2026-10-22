@@ -1,3 +1,5 @@
+<img width="1580" height="500" alt="Balerx-Gate-dragon-gateway-logo-stacked-white" src="https://github.com/user-attachments/assets/2e320f25-8f2e-4458-aaeb-11ba84dd5f87" />
+
 # Balerx Gate scanner
 
 Balerx Gate's scanner is a local, metadata-only check for AI coding agents. `balerx` looks on your machine for known agents and for risky settings in their config: unpinned MCP packages, plain HTTP endpoints, broad filesystem access, and secrets sitting in those files. It is Apache-2.0. An optional hosted dashboard can receive a scan or a Guard activity log only after you pass an API URL and an ingest key from that dashboard.
