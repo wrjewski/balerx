@@ -197,21 +197,21 @@ More detail: [scan](../docs/cli/scan.md), [guard](../docs/cli/guard.md), [policy
 
 ## Connect to the dashboard
 
-The scanner repository is https://github.com/wrjewski/balerx. After you create an account, onboarding shows the API URL for that dashboard. Use that URL. This repository does not hard-code a host.
+Sign up at [https://balerxgate.com](https://balerxgate.com) for Guard sync, Monitor, and Team. The scanner has no compiled-in API host. On the Settings or Onboarding page, copy the ingest URL and paste it as `BALERX_API_URL` or `--api-url`. This repository does not publish that hostname.
 
 Monitor is the hosted view of agents you run yourself: traces, tool calls, and incidents. Team is the organization around that view: people, roles, and the machines that upload scans.
 
-1. In Balerx Gate onboarding, copy the ingest key and the API URL the dashboard shows.
-2. Save them in the environment, or pass them as flags:
+1. Create an account at https://balerxgate.com.
+2. On Settings or Onboarding, copy the ingest URL and the ingest key.
+3. Save them in the environment, or pass them as flags:
 
 ```bash
-export BALERX_API_URL="https://YOUR_HOST"
+# Paste the ingest URL from Settings or Onboarding at https://balerxgate.com
+export BALERX_API_URL
 export BALERX_API_KEY
 balerx scan --json scan.json
 balerx upload --scan scan.json
 ```
-
-`YOUR_HOST` is the origin from onboarding, including the scheme.
 
 A successful scan upload prints `Uploaded scan scan.json`. A successful activity upload prints `Uploaded N activity events from <path>`. A successful policy pull prints `Wrote organization policy to <path>`. A rejected request prints `Upload failed:` or `Policy pull failed:` and exits 1.
 
