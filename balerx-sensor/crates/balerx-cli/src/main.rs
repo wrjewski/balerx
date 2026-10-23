@@ -25,6 +25,10 @@ use tracing::info;
 #[command(about = "Balerx Gate - Security scanner for AI coding agents", long_about = None)]
 #[command(version)]
 struct Cli {
+    /// Disable color. Same as setting `NO_COLOR`.
+    #[arg(long, global = true)]
+    no_color: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -59,6 +63,14 @@ enum Commands {
         /// Quiet mode - only output files, no terminal
         #[arg(short, long)]
         quiet: bool,
+
+        /// Skip findings under this path. Repeat the flag to skip more than one.
+        #[arg(long, value_name = "PATH")]
+        exclude: Vec<PathBuf>,
+
+        /// JSON file of findings to hide. Shape: `{"ignore":[{"rule_id":"...","resource":"..."}]}`
+        #[arg(long, value_name = "FILE")]
+        baseline: Option<PathBuf>,
     },
 
     /// Generate or update agent lockfile
@@ -129,6 +141,19 @@ enum Commands {
         #[command(subcommand)]
         command: PolicyCommands,
     },
+
+    /// Show version, data directory, Guard hooks, and policy. Does not use the network.
+    Doctor,
+
+    /// Print a shell completion script
+    Completions {
+        /// bash, zsh, fish, or powershell
+        #[arg(value_enum)]
+        shell: Shell,
+    },
+
+    /// Print the install command for a published release. Does not download or replace this binary.
+    SelfUpdate,
 }
 
 #[derive(Subcommand)]
@@ -250,8 +275,30 @@ enum CliCanaryType {
     Generic,
 }
 
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum Shell {
+    Bash,
+    Zsh,
+    Fish,
+    Powershell,
+}
+
+struct ScanOptions {
+    path: Option<PathBuf>,
+    format: Option<OutputFormat>,
+    fail_on: Option<FailOn>,
+    json: Option<PathBuf>,
+    sarif: Option<PathBuf>,
+    html: Option<PathBuf>,
+    quiet: bool,
+    exclude: Vec<PathBuf>,
+    baseline: Option<PathBuf>,
+}
+
 fn main() -> Result<()> {
+    let cli = Cli::parse();
     let quiet = std::env::args().any(|arg| arg == "-q" || arg == "--quiet");
+    let no_color = cli.no_color || terminal::no_color();
     let filter = if quiet {
         tracing_subscriber::EnvFilter::new("off")
     } else {
@@ -263,13 +310,8 @@ fn main() -> Result<()> {
         .with_target(false)
         .with_level(true)
         .with_writer(std::io::stderr)
-        .with_ansi(
-            std::env::var_os("NO_COLOR").is_none()
-                && std::io::IsTerminal::is_terminal(&std::io::stderr()),
-        )
+        .with_ansi(!no_color && std::io::IsTerminal::is_terminal(&std::io::stderr()))
         .init();
-
-    let cli = Cli::parse();
 
     match cli.command {
         Commands::Scan {
@@ -280,8 +322,20 @@ fn main() -> Result<()> {
             sarif,
             html,
             quiet,
+            exclude,
+            baseline,
         } => {
-            run_scan(path.as_deref(), format, fail_on, json, sarif, html, quiet)?;
+            run_scan(ScanOptions {
+                path,
+                format,
+                fail_on,
+                json,
+                sarif,
+                html,
+                quiet,
+                exclude,
+                baseline,
+            })?;
         }
         Commands::Lock { output } => {
             run_lock(&output)?;
@@ -325,6 +379,15 @@ fn main() -> Result<()> {
                 run_policy_pull(api_url, api_key, output)?;
             }
         },
+        Commands::Doctor => {
+            run_doctor()?;
+        }
+        Commands::Completions { shell } => {
+            print_completions(shell);
+        }
+        Commands::SelfUpdate => {
+            run_self_update();
+        }
     }
 
     Ok(())
@@ -332,15 +395,19 @@ fn main() -> Result<()> {
 
 // Main scan orchestration: length is acceptable for sequential workflow
 #[allow(clippy::too_many_lines)]
-fn run_scan(
-    scan_path: Option<&std::path::Path>,
-    format: Option<OutputFormat>,
-    fail_on: Option<FailOn>,
-    json_path: Option<PathBuf>,
-    sarif_path: Option<PathBuf>,
-    html_path: Option<PathBuf>,
-    quiet: bool,
-) -> Result<()> {
+fn run_scan(options: ScanOptions) -> Result<()> {
+    let ScanOptions {
+        path: scan_path,
+        format,
+        fail_on,
+        json: json_path,
+        sarif: sarif_path,
+        html: html_path,
+        quiet,
+        exclude,
+        baseline,
+    } = options;
+    let scan_path = scan_path.as_deref();
     info!("Starting Balerx Gate security scan");
 
     let mut result = ScanResult::new();
@@ -471,11 +538,7 @@ fn run_scan(
             ];
             if names
                 .iter()
-                .any(|name| process.name.to_ascii_lowercase().contains(name.as_str()))
-                || process
-                    .name
-                    .to_ascii_lowercase()
-                    .contains(&agent.definition_id.to_ascii_lowercase())
+                .any(|name| balerx_core::process::process_name_matches(&process.name, name))
             {
                 agent.process_id = Some(process.pid);
                 agent.status = balerx_core::AgentStatus::Running;
@@ -526,7 +589,7 @@ fn run_scan(
                 } else {
                     RuleId::ToolPoisonHiddenInstructions
                 };
-                let finding = Finding::new(
+                let mut finding = Finding::new(
                     rule,
                     match poison.severity {
                         balerx_core::poison::PoisonSeverity::Critical => FindingSeverity::Critical,
@@ -536,18 +599,24 @@ fn run_scan(
                     format!("Suspicious instruction detected: {}", poison.pattern_name),
                     "Found potentially malicious pattern in agent configuration file".to_string(),
                 )
-                .with_resource(poison.location)
+                .with_resource(poison.location.clone())
                 .with_evidence(serde_json::json!({
                     "pattern": poison.pattern_name,
                     "context": poison.context
                 }))
                 .with_fix("Review this instruction and remove it if it was not intentionally added")
-                .with_confidence(Confidence::Medium);
+                .with_confidence(Confidence::Medium)
+                .with_line(poison.line);
+                if let Some(agent) = balerx_core::poison::agent_for_path(&poison.location) {
+                    finding = finding.with_agent(agent);
+                }
 
                 result.add_finding(finding);
             }
         }
     }
+
+    apply_scan_filters(&mut result, &exclude, baseline.as_deref())?;
 
     if json_path.is_some() || sarif_path.is_some() || html_path.is_some() {
         if let Some(path) = json_path {
@@ -1019,7 +1088,10 @@ fn run_canary(command: CanaryCommands) -> Result<()> {
             let canary = manager.plant(canary_type, &location)?;
             println!("\n✓ Canary ID: {}", canary.id);
             println!("\nWARNING: This is a FAKE credential for detection only.");
-            println!("If an AI agent accesses this file, Guard will alert immediately.");
+            println!(
+                "If an AI agent reads this file, Guard records that access in the local activity log."
+            );
+            println!("This command does not send an alert.");
         }
         CanaryCommands::Remove { canary_id } => {
             manager.remove(&canary_id)?;
@@ -1100,10 +1172,9 @@ fn resolve_api_key(api_key: Option<String>) -> Result<String> {
             }
             return Ok(key);
         }
-        eprintln!(
-            "warning: --api-key is visible in the process list and shell history. Prefer BALERX_API_KEY, or pass --api-key - to read the key from stdin."
+        anyhow::bail!(
+            "--api-key VALUE is not accepted. It would show up in the process list and shell history. Set BALERX_API_KEY, or pass --api-key - to read the key from stdin."
         );
-        return Ok(value);
     }
     std::env::var("BALERX_API_KEY")
         .ok()
@@ -1113,6 +1184,180 @@ fn resolve_api_key(api_key: Option<String>) -> Result<String> {
                 "Set BALERX_API_KEY, or pass --api-key - to read the key from stdin. The CLI stays offline until you opt in."
             )
         })
+}
+
+fn apply_scan_filters(
+    result: &mut ScanResult,
+    exclude: &[PathBuf],
+    baseline: Option<&std::path::Path>,
+) -> Result<()> {
+    let ignored = match baseline {
+        Some(path) => load_baseline(path)?,
+        None => Vec::new(),
+    };
+    if exclude.is_empty() && ignored.is_empty() {
+        return Ok(());
+    }
+    result.retain_findings(|finding| {
+        !resource_excluded(&finding.affected_resource, exclude)
+            && !baseline_matches(finding, &ignored)
+    });
+    Ok(())
+}
+
+#[derive(serde::Deserialize)]
+struct BaselineFile {
+    #[serde(default)]
+    ignore: Vec<BaselineItem>,
+}
+
+#[derive(serde::Deserialize)]
+struct BaselineItem {
+    rule_id: String,
+    resource: String,
+}
+
+fn load_baseline(path: &std::path::Path) -> Result<Vec<BaselineItem>> {
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("Could not read file: {}", path.display()))?;
+    let parsed: BaselineFile = serde_json::from_str(&text).with_context(|| {
+        format!(
+            "Could not parse baseline {}. Expected {{\"ignore\":[{{\"rule_id\":\"MCP-REMOTE-001\",\"resource\":\".cursor/mcp.json\"}}]}}",
+            path.display()
+        )
+    })?;
+    Ok(parsed.ignore)
+}
+
+fn baseline_matches(finding: &Finding, ignored: &[BaselineItem]) -> bool {
+    let code = finding.rule_id.code();
+    let resource = finding.affected_resource.replace('\\', "/");
+    let home = balerx_core::lockfile::home_relative(std::path::Path::new(&resource));
+    ignored.iter().any(|item| {
+        let rule_ok = item.rule_id.eq_ignore_ascii_case(code);
+        let pattern = item.resource.replace('\\', "/");
+        rule_ok && paths_same(&resource, &home, &pattern)
+    })
+}
+
+fn paths_same(resource: &str, home: &str, pattern: &str) -> bool {
+    resource == pattern
+        || home == pattern
+        || resource.ends_with(&format!("/{pattern}"))
+        || home.ends_with(&format!("/{pattern}"))
+}
+
+fn resource_excluded(resource: &str, excludes: &[PathBuf]) -> bool {
+    let resource = resource.replace('\\', "/");
+    let cwd = std::env::current_dir().ok();
+    excludes.iter().any(|exclude| {
+        let raw = exclude.to_string_lossy().replace('\\', "/");
+        let raw = raw.trim_end_matches('/').to_string();
+        if path_has_prefix(&resource, &raw) {
+            return true;
+        }
+        let Some(cwd) = &cwd else {
+            return false;
+        };
+        let absolute = if exclude.is_absolute() {
+            exclude.clone()
+        } else {
+            cwd.join(exclude)
+        };
+        let absolute = absolute.to_string_lossy().replace('\\', "/");
+        let absolute = absolute.trim_end_matches('/').to_string();
+        if path_has_prefix(&resource, &absolute) {
+            return true;
+        }
+        std::path::Path::new(&absolute)
+            .canonicalize()
+            .is_ok_and(|canon| {
+                path_has_prefix(
+                    &resource,
+                    canon
+                        .to_string_lossy()
+                        .replace('\\', "/")
+                        .trim_end_matches('/'),
+                )
+            })
+    })
+}
+
+fn path_has_prefix(path: &str, prefix: &str) -> bool {
+    !prefix.is_empty() && (path == prefix || path.starts_with(&format!("{prefix}/")))
+}
+
+fn run_doctor() -> Result<()> {
+    println!("balerx {}", env!("CARGO_PKG_VERSION"));
+    let log_path = ActivityLog::default_log().path().to_path_buf();
+    let data_dir = log_path
+        .parent()
+        .and_then(|path| path.parent())
+        .map_or_else(|| log_path.clone(), std::path::Path::to_path_buf);
+    let writable = std::fs::create_dir_all(&data_dir).is_ok();
+    println!(
+        "data directory: {} ({})",
+        data_dir.display(),
+        if writable { "writable" } else { "not writable" }
+    );
+    let policy_path = policy_path_from_env();
+    println!(
+        "policy: {} ({})",
+        policy_path.display(),
+        if policy_path.is_file() {
+            "present"
+        } else {
+            "built-in default"
+        }
+    );
+    let status = HookInstaller::new().status();
+    println!(
+        "guard hooks: claude_user={} claude_project={} cursor={}",
+        status.claude_user, status.claude_project, status.cursor_user
+    );
+    println!(
+        "activity log: {}",
+        ActivityLog::default_log().path().display()
+    );
+    println!("offline: doctor does not contact the network");
+    if !writable {
+        anyhow::bail!("The data directory is not writable");
+    }
+    Ok(())
+}
+
+fn run_self_update() {
+    println!("balerx {}", env!("CARGO_PKG_VERSION"));
+    println!("This command does not download or replace the binary.");
+    println!("Install a published release from https://github.com/wrjewski/balerx :");
+    println!(
+        "  curl -fsSL https://raw.githubusercontent.com/wrjewski/balerx/main/install.sh -o install.sh && sh install.sh"
+    );
+    println!("Pin a release with BALERX_VERSION, for example BALERX_VERSION=0.1.4.");
+    println!("SHA256SUMS is checked always. If cosign is on PATH, the script also verifies the keyless Sigstore bundle.");
+}
+
+fn print_completions(shell: Shell) {
+    let commands =
+        "scan lock diff guard hook log canary upload policy doctor completions self-update";
+    match shell {
+        Shell::Bash => {
+            println!("complete -W \"{commands}\" balerx");
+        }
+        Shell::Zsh => {
+            println!("#compdef balerx");
+            println!("compadd {commands}");
+        }
+        Shell::Fish => {
+            println!("complete -c balerx -f -a \"{commands}\"");
+        }
+        Shell::Powershell => {
+            println!("Register-ArgumentCompleter -CommandName balerx -ScriptBlock {{");
+            println!("  param($word)");
+            println!("  '{commands}'.Split(' ') | Where-Object {{ $_ -like \"$word*\" }}");
+            println!("}}");
+        }
+    }
 }
 
 fn guard_hooks_installed(home: &std::path::Path) -> bool {

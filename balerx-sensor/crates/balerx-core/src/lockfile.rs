@@ -392,18 +392,93 @@ impl Lockfile {
 
 #[must_use]
 pub fn home_relative(path: &Path) -> String {
-    let display = path.to_string_lossy().replace('\\', "/");
-    if let Some(home) = dirs::home_dir() {
-        let home = home.to_string_lossy().replace('\\', "/");
-        if display == home {
+    home_relative_from(path, dirs::home_dir().as_deref())
+}
+
+/// SARIF `uri` for a finding path: cwd-relative when it is inside `cwd`,
+/// otherwise `~/...` when it is inside `home`. Separators are `/`.
+///
+/// Windows drive paths compare without regard to ASCII case, and a `\\?\`
+/// prefix is removed so `C:\` and `c:\` name the same directory.
+#[must_use]
+pub(crate) fn portable_uri(path: &str, cwd: Option<&Path>, home: Option<&Path>) -> String {
+    let normalized = normalize_separators(path);
+    if let Some(cwd) = cwd {
+        let cwd_norm = normalize_separators(&cwd.to_string_lossy());
+        let cwd_dir = directory_prefix(&cwd_norm);
+        if paths_equal(directory_prefix(&normalized), cwd_dir) {
+            return ".".to_string();
+        }
+        let prefix = format!("{cwd_dir}/");
+        if let Some(rest) = child_suffix(&normalized, &prefix) {
+            return rest.to_string();
+        }
+    }
+    home_relative_from(Path::new(&normalized), home)
+}
+
+fn home_relative_from(path: &Path, home: Option<&Path>) -> String {
+    let display = normalize_separators(&path.to_string_lossy());
+    if let Some(home) = home {
+        let home_norm = normalize_separators(&home.to_string_lossy());
+        let home_dir = directory_prefix(&home_norm);
+        if paths_equal(directory_prefix(&display), home_dir) {
             return "~".to_string();
         }
-        let prefix = format!("{home}/");
-        if let Some(rest) = display.strip_prefix(&prefix) {
+        let prefix = format!("{home_dir}/");
+        if let Some(rest) = child_suffix(&display, &prefix) {
             return format!("~/{rest}");
         }
     }
     display
+}
+
+fn normalize_separators(value: &str) -> String {
+    let slashed = value.replace('\\', "/");
+    if let Some(rest) = slashed.strip_prefix("//?/") {
+        if has_drive_prefix(rest) {
+            return rest.to_string();
+        }
+    }
+    slashed
+}
+
+fn directory_prefix(value: &str) -> &str {
+    if value.len() > 1 && value.ends_with('/') {
+        value.trim_end_matches('/')
+    } else {
+        value
+    }
+}
+
+fn paths_equal(left: &str, right: &str) -> bool {
+    if has_drive_prefix(left) || has_drive_prefix(right) {
+        left.eq_ignore_ascii_case(right)
+    } else {
+        left == right
+    }
+}
+
+fn child_suffix<'a>(path: &'a str, prefix: &str) -> Option<&'a str> {
+    if has_drive_prefix(path) || has_drive_prefix(prefix) {
+        let mut rest = path.chars();
+        for expected in prefix.chars() {
+            let actual = rest.next()?;
+            if !actual.eq_ignore_ascii_case(&expected) {
+                return None;
+            }
+        }
+        return Some(rest.as_str());
+    }
+    path.strip_prefix(prefix)
+}
+
+fn has_drive_prefix(value: &str) -> bool {
+    let mut chars = value.chars();
+    matches!(
+        (chars.next(), chars.next()),
+        (Some(letter), Some(':')) if letter.is_ascii_alphabetic()
+    )
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -418,21 +493,11 @@ fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 fn package_from_command(command: &str, args: &[String]) -> Option<PackageInfo> {
-    let base = command.rsplit(['/', '\\']).next().unwrap_or(command);
-    let registry = match base {
-        "npx" | "npm" => "npm",
-        "uvx" | "uv" | "pip" | "pip3" => "pypi",
-        "docker" | "podman" => "docker",
-        _ => return None,
-    };
-    let joined = args.first().map(|_| args.join(" ")).unwrap_or_default();
-    if joined.is_empty() && command.is_empty() {
-        return None;
-    }
+    let identity = crate::config::package_identity(command, args)?;
     Some(PackageInfo {
-        name: joined,
-        version: String::new(),
-        registry: registry.to_string(),
+        name: identity.name,
+        version: identity.version,
+        registry: identity.registry.to_string(),
     })
 }
 
@@ -490,6 +555,49 @@ mod tests {
         assert!(removed.iter().any(
             |drift| matches!(drift, DriftType::RemovedMcpServer { server, .. } if server == "evil")
         ));
+    }
+
+    #[test]
+    fn home_relative_windows_drive_is_a_forward_slash_uri() {
+        let home = Path::new(r"C:\Users\ada");
+        let cwd = Path::new(r"D:\work\repo");
+        assert_eq!(
+            portable_uri(r"C:\Users\ada\.cursor\mcp.json", Some(cwd), Some(home)),
+            "~/.cursor/mcp.json"
+        );
+        assert_eq!(
+            portable_uri(r"c:\users\ada\.cursor\mcp.json", Some(cwd), Some(home)),
+            "~/.cursor/mcp.json"
+        );
+        assert_eq!(
+            portable_uri(r"\\?\C:\Users\ada\.cursor\mcp.json", Some(cwd), Some(home)),
+            "~/.cursor/mcp.json"
+        );
+        assert_eq!(portable_uri(r"C:\Users\ada", Some(cwd), Some(home)), "~");
+        assert_eq!(
+            portable_uri(r"D:\work\repo\src\main.rs", Some(cwd), Some(home)),
+            "src/main.rs"
+        );
+        assert_eq!(
+            portable_uri(r"E:\other\file.txt", Some(cwd), Some(home)),
+            "E:/other/file.txt"
+        );
+        assert_eq!(
+            portable_uri(
+                "/home/ada/.cursor/mcp.json",
+                Some(Path::new("/workspace")),
+                Some(Path::new("/home/ada"))
+            ),
+            "~/.cursor/mcp.json"
+        );
+        assert_eq!(
+            portable_uri(
+                "/Home/ada/.cursor/mcp.json",
+                Some(Path::new("/workspace")),
+                Some(Path::new("/home/ada"))
+            ),
+            "/Home/ada/.cursor/mcp.json"
+        );
     }
 
     #[test]

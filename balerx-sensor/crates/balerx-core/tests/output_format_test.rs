@@ -121,11 +121,7 @@ fn test_sarif_output_format() {
         "https://github.com/wrjewski/balerx",
         "SARIF links to the public scanner repository"
     );
-    let private_repo = format!("{}-{}", "balerxgate", "dev");
-    assert!(
-        !content.contains(&private_repo),
-        "SARIF must not point at the private development repository"
-    );
+    assert_public_scanner_urls(&content);
 
     let results = run["results"].as_array().unwrap();
     assert_eq!(results.len(), 1);
@@ -202,4 +198,58 @@ fn test_json_roundtrip() {
     assert_eq!(parsed.summary.findings_count, 1);
 
     std::fs::remove_file(json_path).ok();
+}
+
+fn assert_public_scanner_urls(content: &str) {
+    let public_url = "https://github.com/wrjewski/balerx";
+    let marker = "github.com/";
+    let public_tail = public_url.trim_start_matches("https://");
+    let mut start = 0;
+    let mut seen = false;
+    while let Some(index) = content[start..].find(marker) {
+        let at = start + index;
+        let rest = &content[at..];
+        assert!(
+            rest.starts_with(public_tail),
+            "SARIF may only link the public scanner repository"
+        );
+        let after = &rest[public_tail.len()..];
+        assert!(
+            after.is_empty()
+                || after
+                    .starts_with(|ch: char| !ch.is_ascii_alphanumeric() && ch != '-' && ch != '_'),
+            "SARIF may only link the public scanner repository"
+        );
+        seen = true;
+        start = at + public_tail.len();
+    }
+    assert!(seen, "SARIF should link the public scanner repository");
+    assert!(content.contains(public_url));
+}
+
+#[test]
+fn sarif_uri_outside_the_working_directory_is_home_relative() {
+    let home = dirs::home_dir().expect("home");
+    let resource = home.join(".cursor").join("mcp.json");
+    let mut result = ScanResult::new();
+    result.add_finding(
+        Finding::new(
+            RuleId::McpRemotePlainHttp,
+            FindingSeverity::High,
+            "Plain HTTP".to_string(),
+            "Remote MCP URL".to_string(),
+        )
+        .with_resource(resource.to_string_lossy().into_owned()),
+    );
+    let sarif_path = std::env::temp_dir().join("balerx_home_uri.sarif");
+    write_sarif(&result, &sarif_path).expect("write");
+    let content = std::fs::read_to_string(&sarif_path).expect("read");
+    let parsed: serde_json::Value = serde_json::from_str(&content).expect("json");
+    let uri = parsed["runs"][0]["results"][0]["locations"][0]["physicalLocation"]
+        ["artifactLocation"]["uri"]
+        .as_str()
+        .expect("uri");
+    assert_eq!(uri, "~/.cursor/mcp.json");
+    assert_public_scanner_urls(&content);
+    std::fs::remove_file(sarif_path).ok();
 }

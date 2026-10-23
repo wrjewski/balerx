@@ -40,6 +40,41 @@ balerx_asset() {
   esac
 }
 
+balerx_release_base() {
+  repo=$1
+  if [ -n "${BALERX_RELEASE_BASE_URL:-}" ]; then
+    printf '%s\n' "$BALERX_RELEASE_BASE_URL"
+    return 0
+  fi
+  if [ -n "${BALERX_VERSION:-}" ]; then
+    version=${BALERX_VERSION#v}
+    printf 'https://github.com/%s/releases/download/v%s\n' "$repo" "$version"
+    return 0
+  fi
+  printf 'https://github.com/%s/releases/latest/download\n' "$repo"
+}
+
+# Verify SHA256SUMS with keyless cosign when the tool is installed.
+# Without cosign, the caller has already checked the archive checksum.
+balerx_verify_signature() {
+  repo=$1
+  base=$2
+  if ! command -v cosign >/dev/null 2>&1; then
+    echo "cosign is not installed. Checked SHA256SUMS only."
+    return 0
+  fi
+  if ! curl --fail --location --silent --show-error "${base}/SHA256SUMS.bundle" --output SHA256SUMS.bundle; then
+    echo "cosign is installed, but SHA256SUMS.bundle was not downloaded." >&2
+    return 1
+  fi
+  identity="^https://github.com/${repo}/\\.github/workflows/release\\.yml@refs/tags/v"
+  cosign verify-blob \
+    --bundle SHA256SUMS.bundle \
+    --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+    --certificate-identity-regexp "$identity" \
+    SHA256SUMS
+}
+
 if [ "${BALERX_INSTALL_LIB:-}" = "1" ]; then
   return 0 2>/dev/null || exit 0
 fi
@@ -47,7 +82,7 @@ fi
 repo=${BALERX_REPO:-${BALERX_GITHUB_REPO:-wrjewski/balerx}}
 target=$(balerx_target)
 asset=$(balerx_asset "$target")
-base=${BALERX_RELEASE_BASE_URL:-https://github.com/${repo}/releases/latest/download}
+base=$(balerx_release_base "$repo")
 workdir=$(mktemp -d)
 trap 'rm -rf "$workdir"' EXIT
 cd "$workdir"
@@ -71,6 +106,7 @@ if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
   echo "Checksum verification failed for ${asset}." >&2
   exit 1
 fi
+balerx_verify_signature "$repo" "$base"
 
 case "$asset" in
   *.zip)

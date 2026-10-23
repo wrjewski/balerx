@@ -1,0 +1,127 @@
+name: Balerx Gate scan
+description: Download a prebuilt balerx release, scan the workspace, and upload SARIF.
+inputs:
+  version:
+    description: Release version without a leading v. Empty uses the latest release.
+    required: false
+    default: ''
+  path:
+    description: Directory or file to scan.
+    required: false
+    default: '.'
+  fail-on:
+    description: Exit 1 when a finding is at or above this severity.
+    required: false
+    default: high
+  sarif-file:
+    description: SARIF path passed to code scanning.
+    required: false
+    default: balerx.sarif
+runs:
+  using: composite
+  steps:
+    - name: Install balerx
+      shell: bash
+      env:
+        BALERX_VERSION: ${{ inputs.version }}
+      run: |
+        set -euo pipefail
+        os=$(uname -s)
+        arch=$(uname -m)
+        case "$os" in
+          Linux | linux) os_name=linux ;;
+          Darwin | macOS | macos) os_name=darwin ;;
+          MINGW* | MSYS* | CYGWIN*) os_name=windows ;;
+          *) echo "Unsupported operating system: $os" >&2; exit 1 ;;
+        esac
+        case "$arch" in
+          x86_64 | amd64 | AMD64 | x64) arch_name=x86_64 ;;
+          aarch64 | arm64 | ARM64) arch_name=aarch64 ;;
+          *) echo "Unsupported architecture: $arch" >&2; exit 1 ;;
+        esac
+        case "$os_name" in
+          linux) target="${arch_name}-unknown-linux-gnu" ;;
+          darwin) target="${arch_name}-apple-darwin" ;;
+          windows) target="${arch_name}-pc-windows-msvc" ;;
+        esac
+        if [ "$os_name" = windows ]; then
+          asset="balerx-${target}.zip"
+        else
+          asset="balerx-${target}.tar.gz"
+        fi
+        repo="wrjewski/balerx"
+        if [ -n "${BALERX_VERSION}" ]; then
+          version=${BALERX_VERSION#v}
+          base="https://github.com/${repo}/releases/download/v${version}"
+        else
+          base="https://github.com/${repo}/releases/latest/download"
+        fi
+        work=$(mktemp -d)
+        curl --fail --location --silent --show-error "${base}/SHA256SUMS" --output "${work}/SHA256SUMS"
+        curl --fail --location --silent --show-error "${base}/${asset}" --output "${work}/${asset}"
+        expected=$(awk -v name="$asset" '$2 == name { print $1; exit }' "${work}/SHA256SUMS")
+        if command -v sha256sum >/dev/null 2>&1; then
+          actual=$(sha256sum "${work}/${asset}" | awk '{ print $1 }')
+        else
+          actual=$(shasum -a 256 "${work}/${asset}" | awk '{ print $1 }')
+        fi
+        if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
+          echo "Checksum verification failed for ${asset}." >&2
+          exit 1
+        fi
+        if command -v cosign >/dev/null 2>&1; then
+          curl --fail --location --silent --show-error "${base}/SHA256SUMS.bundle" --output "${work}/SHA256SUMS.bundle"
+          identity="^https://github.com/${repo}/\\.github/workflows/release\\.yml@refs/tags/v"
+          (
+            cd "$work"
+            cosign verify-blob \
+              --bundle SHA256SUMS.bundle \
+              --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+              --certificate-identity-regexp "$identity" \
+              SHA256SUMS
+          )
+        fi
+        dest="${RUNNER_TEMP}/balerx-bin"
+        mkdir -p "$dest"
+        if [ "$os_name" = windows ]; then
+          unzip -q "${work}/${asset}" -d "$work"
+          mv "${work}/balerx.exe" "${dest}/balerx.exe"
+        else
+          tar --extract --gzip --file "${work}/${asset}" --directory "$work"
+          mv "${work}/balerx" "${dest}/balerx"
+          chmod 755 "${dest}/balerx"
+        fi
+        echo "$dest" >> "$GITHUB_PATH"
+
+    - name: Scan
+      id: scan
+      shell: bash
+      env:
+        SCAN_PATH: ${{ inputs.path }}
+        FAIL_ON: ${{ inputs.fail-on }}
+        SARIF_FILE: ${{ inputs.sarif-file }}
+      run: |
+        set -euo pipefail
+        case "$FAIL_ON" in
+          critical|high|medium|low|info) ;;
+          *) echo "unsupported fail-on: $FAIL_ON" >&2; exit 2 ;;
+        esac
+        set +e
+        balerx scan "$SCAN_PATH" --format sarif --fail-on "$FAIL_ON" --no-color > "$SARIF_FILE"
+        code=$?
+        set -e
+        echo "exit_code=${code}" >> "$GITHUB_OUTPUT"
+        if [ "$code" -gt 1 ]; then
+          exit "$code"
+        fi
+
+    - name: Upload SARIF
+      if: always()
+      uses: github/codeql-action/upload-sarif@4bfa242aa49c5f7c6770b98670d354a7dfac05f8 # v3.39.1
+      with:
+        sarif_file: ${{ inputs.sarif-file }}
+
+    - name: Apply fail-on
+      if: always() && steps.scan.outputs.exit_code != '0'
+      shell: bash
+      run: exit "${{ steps.scan.outputs.exit_code }}"

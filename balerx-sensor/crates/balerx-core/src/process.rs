@@ -22,6 +22,29 @@ pub struct ProcessCollector {
     system: System,
 }
 
+/// Exact match of a process basename. `cursor-agent-st` does not match `cursor`.
+/// A trailing `.exe` is ignored, and the comparison is case-insensitive.
+#[must_use]
+pub fn process_name_matches(process_name: &str, expected: &str) -> bool {
+    let base = process_name
+        .rsplit(['/', '\\'])
+        .next()
+        .unwrap_or(process_name);
+    let stem = strip_exe_suffix(base);
+    stem.eq_ignore_ascii_case(expected)
+}
+
+fn strip_exe_suffix(name: &str) -> &str {
+    let Some(split) = name.len().checked_sub(4) else {
+        return name;
+    };
+    if name[split..].eq_ignore_ascii_case(".exe") {
+        &name[..split]
+    } else {
+        name
+    }
+}
+
 impl ProcessCollector {
     #[must_use]
     pub fn new() -> Self {
@@ -43,10 +66,7 @@ impl ProcessCollector {
             let process_name = process.name().to_string_lossy();
 
             for agent_name in agent_names {
-                if process_name
-                    .to_lowercase()
-                    .contains(&agent_name.to_lowercase())
-                {
+                if process_name_matches(&process_name, agent_name) {
                     let cmd: Vec<String> = process
                         .cmd()
                         .iter()
@@ -169,5 +189,22 @@ impl ProcessCollector {
 impl Default for ProcessCollector {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::process_name_matches;
+
+    #[test]
+    fn process_match_is_the_basename_only() {
+        assert!(process_name_matches("cursor", "cursor"));
+        assert!(process_name_matches("Cursor.exe", "cursor"));
+        assert!(process_name_matches(
+            r"C:\Program Files\Cursor\Cursor.exe",
+            "Cursor"
+        ));
+        assert!(!process_name_matches("cursor-agent-st", "cursor"));
+        assert!(!process_name_matches("cursor-helper", "cursor"));
     }
 }

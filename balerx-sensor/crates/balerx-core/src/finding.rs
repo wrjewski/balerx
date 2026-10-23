@@ -161,6 +161,26 @@ impl ScanResult {
 
         self.summary.risk_score = score.min(100) as u8;
     }
+
+    pub fn retain_findings(&mut self, mut keep: impl FnMut(&Finding) -> bool) {
+        self.findings.retain(|finding| keep(finding));
+        self.summary.critical_count = 0;
+        self.summary.high_count = 0;
+        self.summary.medium_count = 0;
+        self.summary.low_count = 0;
+        self.summary.info_count = 0;
+        for finding in &self.findings {
+            match finding.severity {
+                FindingSeverity::Critical => self.summary.critical_count += 1,
+                FindingSeverity::High => self.summary.high_count += 1,
+                FindingSeverity::Medium => self.summary.medium_count += 1,
+                FindingSeverity::Low => self.summary.low_count += 1,
+                FindingSeverity::Info => self.summary.info_count += 1,
+            }
+        }
+        self.summary.findings_count = self.findings.len();
+        self.recalculate_risk_score();
+    }
 }
 
 impl Default for ScanResult {

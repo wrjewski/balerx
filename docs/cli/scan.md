@@ -13,7 +13,9 @@ balerx scan --json scan.json --sarif scan.sarif --html report.html
 balerx scan --json results.json --quiet
 ```
 
-`scan` accepts an optional path. A directory is the poison-scan root. A file is scanned as one config. Logs and tracing go to stderr. `--quiet` (`-q`) turns tracing off and skips the terminal report. Color is off when `NO_COLOR` is set or stdout is not a terminal.
+`scan` accepts an optional path. A directory is the poison-scan root. A file is scanned as one config. Logs and tracing go to stderr. `--quiet` (`-q`) turns tracing off and skips the terminal report. Color is off when `NO_COLOR` or `--no-color` is set, or stdout is not a terminal. The timestamp is the local clock.
+
+`--exclude PATH` drops findings under that path. Repeat it to skip more than one. `--baseline FILE` reads a JSON file shaped as `{"ignore":[{"rule_id":"MCP-REMOTE-001","resource":".cursor/mcp.json"}]}` and hides those findings. `rule_id` is the rule code.
 
 `--format json`, `--format sarif`, and `--format text` write that report to stdout. `--json`, `--sarif`, and `--html` still write files.
 
@@ -42,7 +44,7 @@ balerx diff --lockfile my-team.lock
 
 - Terminal: summary, findings, and suggested fixes.
 - JSON: device, agents, and findings. Secret values are redacted.
-- SARIF 2.1.0: for code scanning. The report's `informationUri` is `https://github.com/wrjewski/balerx`. `driver.rules` lists each rule that fired, with that rule's summary. Result locations use a path relative to the working directory when the file is under it, and `region.startLine` when the finding has a line.
+- SARIF 2.1.0: for code scanning. The report's `informationUri` is `https://github.com/wrjewski/balerx`. `driver.rules` lists each rule that fired, with that rule's summary. Result locations use a path relative to the working directory when the file is under it. A file under the home directory and outside the working directory is `~/...` rather than an absolute path. `region.startLine` is set when the finding has a line.
 - HTML: a single-file report.
 
 ## Upload
@@ -56,7 +58,7 @@ balerx upload \
   --scan scan.json
 ```
 
-`--api-url` overrides `BALERX_API_URL`. The API key comes from `BALERX_API_KEY`. `--api-key -` reads one line from stdin. Any other `--api-key` value is accepted and a warning is printed on stderr, because the flag is visible in the process list. The command stays offline until both a URL and a key are set. Use the API URL shown in your Balerx Gate dashboard's onboarding. This repository does not name a host.
+`--api-url` overrides `BALERX_API_URL`. The API key comes from `BALERX_API_KEY`. `--api-key -` reads one line from stdin. A literal `--api-key VALUE` is rejected, because that value shows up in the process list and shell history. The command stays offline until both a URL and a key are set. Use the API URL shown in your Balerx Gate dashboard's onboarding. This repository does not name a host.
 
 A rejected key prints `Upload failed: the server rejected the API key (HTTP 401). Check BALERX_API_KEY.` A missing upload file prints `Could not read file:` and the path.
 
