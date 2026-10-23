@@ -58,7 +58,7 @@ balerx upload \
   --scan scan.json
 ```
 
-`--api-url` overrides `BALERX_API_URL`. The API key comes from `BALERX_API_KEY`. `--api-key -` reads one line from stdin. A literal `--api-key VALUE` is rejected, because that value shows up in the process list and shell history. The command stays offline until both a URL and a key are set. Use the API URL shown in your Balerx Gate dashboard's onboarding. This repository does not name a host.
+`--api-url` overrides `BALERX_API_URL`. The API key comes from `BALERX_API_KEY`. `--api-key -` reads one line from stdin. A literal `--api-key VALUE` is rejected, because that value shows up in the process list and shell history. The command stays offline until both a URL and a key are set. Sign up at https://balerxgate.com, then copy the ingest URL from Settings or Onboarding. This repository does not publish the API hostname.
 
 A rejected key prints `Upload failed: the server rejected the API key (HTTP 401). Check BALERX_API_KEY.` A missing upload file prints `Could not read file:` and the path.
 

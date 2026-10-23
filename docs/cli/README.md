@@ -9,4 +9,4 @@ These pages describe the open-source `balerx` command. The scanner runs on your 
 | Policy file | [policy.md](policy.md) |
 | Hook payload shapes | [../HOOKS.md](../HOOKS.md) |
 
-`balerx upload` and `balerx policy pull` accept `--api-url` or `BALERX_API_URL`, and `--api-key` or `BALERX_API_KEY`. No API host is compiled into the binary. Use the API URL shown in your Balerx Gate dashboard's onboarding.
+`balerx upload` and `balerx policy pull` accept `--api-url` or `BALERX_API_URL`, and `--api-key` or `BALERX_API_KEY`. No API host is compiled into the binary. Sign up at https://balerxgate.com and copy the ingest URL from Settings or Onboarding.

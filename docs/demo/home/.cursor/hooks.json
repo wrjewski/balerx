@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "hooks": {
+    "preToolUse": [
+      {
+        "command": "balerx hook --event-type pre_tool_use"
+      }
+    ]
+  }
+}
