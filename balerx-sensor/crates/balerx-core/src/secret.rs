@@ -22,6 +22,7 @@ pub struct SecretMatch {
     pub redacted_value: String,
     pub location: String,
     pub severity: SecretSeverity,
+    pub line: Option<u32>,
 }
 
 static SECRET_PATTERNS: Lazy<Vec<SecretPattern>> = Lazy::new(|| {
@@ -43,13 +44,38 @@ static SECRET_PATTERNS: Lazy<Vec<SecretPattern>> = Lazy::new(|| {
             severity: SecretSeverity::High,
         },
         SecretPattern {
+            name: "OpenAI Project Key".to_string(),
+            pattern: r"sk-proj-[A-Za-z0-9_-]{20,}".to_string(),
+            severity: SecretSeverity::High,
+        },
+        SecretPattern {
             name: "OpenAI API Key".to_string(),
             pattern: r"sk-[a-zA-Z0-9]{48}".to_string(),
             severity: SecretSeverity::High,
         },
         SecretPattern {
             name: "Anthropic API Key".to_string(),
-            pattern: r"sk-ant-[a-zA-Z0-9\-]{95,}".to_string(),
+            pattern: r"sk-ant-[A-Za-z0-9_-]{20,}".to_string(),
+            severity: SecretSeverity::High,
+        },
+        SecretPattern {
+            name: "Slack Bot Token".to_string(),
+            pattern: r"xox[baprs]-[A-Za-z0-9-]{10,}".to_string(),
+            severity: SecretSeverity::High,
+        },
+        SecretPattern {
+            name: "Stripe Secret Key".to_string(),
+            pattern: r"sk_(?:live|test)_[A-Za-z0-9]{10,}".to_string(),
+            severity: SecretSeverity::High,
+        },
+        SecretPattern {
+            name: "GitHub Fine-Grained PAT".to_string(),
+            pattern: r"github_pat_[A-Za-z0-9_]{20,}".to_string(),
+            severity: SecretSeverity::High,
+        },
+        SecretPattern {
+            name: "URL Password".to_string(),
+            pattern: r"(?i)[a-z][a-z0-9+.-]*://[^/\s:@]+:[^/\s@]{8,}@[^\s]+".to_string(),
             severity: SecretSeverity::High,
         },
         SecretPattern {
@@ -91,17 +117,37 @@ impl SecretDetector {
     #[must_use]
     pub fn scan_text(&self, text: &str, location: &str) -> Vec<SecretMatch> {
         let mut matches = Vec::new();
+        let mut specific_spans = Vec::new();
 
         for (name, regex, severity) in &self.patterns {
             if let Ok(Some(mat)) = regex.find(text) {
+                if is_generic(name)
+                    && specific_spans
+                        .iter()
+                        .any(|(start, end)| mat.start() < *end && mat.end() > *start)
+                {
+                    continue;
+                }
+                if !is_generic(name) {
+                    specific_spans.push((mat.start(), mat.end()));
+                }
                 let matched_text = mat.as_str();
                 let redacted = redact_secret(matched_text);
+                let line = u32::try_from(
+                    text[..mat.start()]
+                        .bytes()
+                        .filter(|byte| *byte == b'\n')
+                        .count()
+                        + 1,
+                )
+                .ok();
 
                 matches.push(SecretMatch {
                     pattern_name: name.clone(),
                     redacted_value: redacted,
                     location: location.to_string(),
                     severity: *severity,
+                    line,
                 });
             }
         }
@@ -119,19 +165,12 @@ impl SecretDetector {
             }
             serde_json::Value::Object(map) => {
                 for (key, value) in map {
-                    let key_lower = key.to_lowercase();
-                    if key_lower.contains("secret")
-                        || key_lower.contains("password")
-                        || key_lower.contains("token")
-                        || key_lower.contains("key")
-                    {
-                        if let serde_json::Value::String(s) = value {
-                            matches.extend(self.scan_text(s, &format!("{location}.{key}")));
-                        }
-                    }
-
                     let nested_location = format!("{location}.{key}");
-                    matches.extend(self.scan_json(value, &nested_location));
+                    if let serde_json::Value::String(text) = value {
+                        matches.extend(self.scan_text(&format!("{key}={text}"), &nested_location));
+                    } else {
+                        matches.extend(self.scan_json(value, &nested_location));
+                    }
                 }
             }
             serde_json::Value::Array(arr) => {
@@ -151,6 +190,10 @@ impl Default for SecretDetector {
     fn default() -> Self {
         Self::new().expect("Failed to compile secret patterns")
     }
+}
+
+fn is_generic(name: &str) -> bool {
+    name.starts_with("Generic ")
 }
 
 fn redact_secret(value: &str) -> String {

@@ -1,5 +1,8 @@
+use crate::agent::Agent;
+use crate::config::McpConfig;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
@@ -18,6 +21,7 @@ pub struct Lockfile {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct DeviceInfo {
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub hostname: String,
     pub platform: String,
 }
@@ -171,10 +175,7 @@ impl Lockfile {
             version: "1.0.0".to_string(),
             timestamp: chrono::Utc::now().to_rfc3339(),
             device: DeviceInfo {
-                hostname: hostname::get()
-                    .ok()
-                    .and_then(|h| h.into_string().ok())
-                    .unwrap_or_else(|| "unknown".to_string()),
+                hostname: String::new(),
                 platform: std::env::consts::OS.to_string(),
             },
             agents: Vec::new(),
@@ -213,6 +214,60 @@ impl Lockfile {
 
     pub fn add_agent(&mut self, agent: LockedAgent) {
         self.agents.push(agent);
+    }
+
+    /// Builds a lockfile from discovered agents.
+    ///
+    /// Paths are home-relative. Each config file and MCP server gets a content hash.
+    /// The machine hostname is left empty so the file can be committed.
+    #[must_use]
+    pub fn capture(agents: &[Agent]) -> Self {
+        let mut lockfile = Self::new();
+        for agent in agents {
+            let mut paths = Vec::new();
+            let mut file_hashes = Vec::new();
+            for path in &agent.config_paths {
+                paths.push(home_relative(path));
+                let bytes = fs::read(path).unwrap_or_default();
+                file_hashes.push(sha256_hex(&bytes));
+                if let Ok(config) = McpConfig::parse_file(path) {
+                    for (name, server) in config.mcp_servers {
+                        let args = server.args.clone().unwrap_or_default();
+                        let command = server.command.clone().unwrap_or_default();
+                        let canonical = serde_json::json!({
+                            "name": name,
+                            "command": command,
+                            "args": args,
+                            "url": server.url,
+                        });
+                        let package = package_from_command(&command, &args);
+                        lockfile.add_mcp_server(LockedMcpServer {
+                            name,
+                            agent: agent.name.clone(),
+                            command,
+                            args,
+                            package,
+                            config_hash: sha256_hex(canonical.to_string().as_bytes()),
+                            tool_descriptions: Vec::new(),
+                        });
+                    }
+                }
+            }
+            paths.sort();
+            let config_hash = if file_hashes.is_empty() {
+                None
+            } else {
+                Some(sha256_hex(file_hashes.join("\n").as_bytes()))
+            };
+            lockfile.add_agent(LockedAgent {
+                name: agent.name.clone(),
+                definition_id: agent.definition_id.clone(),
+                version: agent.version.clone(),
+                config_paths: paths,
+                config_hash,
+            });
+        }
+        lockfile
     }
 
     pub fn add_mcp_server(&mut self, server: LockedMcpServer) {
@@ -335,6 +390,52 @@ impl Lockfile {
     }
 }
 
+#[must_use]
+pub fn home_relative(path: &Path) -> String {
+    let display = path.to_string_lossy().replace('\\', "/");
+    if let Some(home) = dirs::home_dir() {
+        let home = home.to_string_lossy().replace('\\', "/");
+        if display == home {
+            return "~".to_string();
+        }
+        let prefix = format!("{home}/");
+        if let Some(rest) = display.strip_prefix(&prefix) {
+            return format!("~/{rest}");
+        }
+    }
+    display
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let digest = Sha256::digest(bytes);
+    let mut encoded = String::with_capacity(digest.len() * 2);
+    for byte in digest {
+        encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+        encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    encoded
+}
+
+fn package_from_command(command: &str, args: &[String]) -> Option<PackageInfo> {
+    let base = command.rsplit(['/', '\\']).next().unwrap_or(command);
+    let registry = match base {
+        "npx" | "npm" => "npm",
+        "uvx" | "uv" | "pip" | "pip3" => "pypi",
+        "docker" | "podman" => "docker",
+        _ => return None,
+    };
+    let joined = args.first().map(|_| args.join(" ")).unwrap_or_default();
+    if joined.is_empty() && command.is_empty() {
+        return None;
+    }
+    Some(PackageInfo {
+        name: joined,
+        version: String::new(),
+        registry: registry.to_string(),
+    })
+}
+
 impl Default for Lockfile {
     fn default() -> Self {
         Self::new()
@@ -351,6 +452,60 @@ mod tests {
         let toml = toml::to_string(&lockfile).unwrap();
         let parsed: Lockfile = toml::from_str(&toml).unwrap();
         assert_eq!(lockfile.version, parsed.version);
+        assert!(!toml.contains("hostname"));
+    }
+
+    #[test]
+    fn test_mcp_server_add_remove_and_change() {
+        let mut saved = Lockfile::new();
+        saved.add_mcp_server(LockedMcpServer {
+            name: "filesystem".to_string(),
+            agent: "Cursor".to_string(),
+            command: "npx".to_string(),
+            args: vec!["-y".to_string(), "server".to_string(), "/tmp".to_string()],
+            package: None,
+            config_hash: "abc".to_string(),
+            tool_descriptions: vec![],
+        });
+        let mut current = saved.clone();
+        current.mcp_servers[0].args = vec!["-y".to_string(), "server".to_string(), "/".to_string()];
+        current.add_mcp_server(LockedMcpServer {
+            name: "evil".to_string(),
+            agent: "Cursor".to_string(),
+            command: "npx".to_string(),
+            args: vec!["-y".to_string(), "evil".to_string()],
+            package: None,
+            config_hash: "def".to_string(),
+            tool_descriptions: vec![],
+        });
+        let drifts = saved.diff(&current);
+        assert!(drifts.iter().any(
+            |drift| matches!(drift, DriftType::NewMcpServer { server, .. } if server == "evil")
+        ));
+        assert!(drifts.iter().any(
+            |drift| matches!(drift, DriftType::McpArgsChanged { server } if server == "filesystem")
+        ));
+
+        let removed = current.diff(&saved);
+        assert!(removed.iter().any(
+            |drift| matches!(drift, DriftType::RemovedMcpServer { server, .. } if server == "evil")
+        ));
+    }
+
+    #[test]
+    fn test_home_relative_paths_drop_the_machine_name() {
+        let home = dirs::home_dir().expect("home");
+        let path = home.join("proj").join("mcp.json");
+        let shown = home_relative(&path);
+        assert!(shown.starts_with("~/"));
+        if let Some(name) = hostname::get()
+            .ok()
+            .and_then(|value| value.into_string().ok())
+        {
+            if !name.is_empty() {
+                assert!(!shown.contains(&name), "path should not include hostname");
+            }
+        }
     }
 
     #[test]

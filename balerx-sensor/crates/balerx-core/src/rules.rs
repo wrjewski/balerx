@@ -22,6 +22,7 @@ pub enum RuleId {
     ToolPoisonExfiltration,
     HookGapNoGuard,
     HookGapNoTelemetry,
+    ConfigInvalid,
 }
 
 impl RuleId {
@@ -43,6 +44,7 @@ impl RuleId {
             }
             Self::ToolPoisonHiddenInstructions | Self::ToolPoisonExfiltration => "tool_poisoning",
             Self::HookGapNoGuard | Self::HookGapNoTelemetry => "hook_gap",
+            Self::ConfigInvalid => "configuration",
         }
     }
 
@@ -68,6 +70,35 @@ impl RuleId {
             Self::ToolPoisonExfiltration => "TOOL-POISON-002",
             Self::HookGapNoGuard => "HOOK-GAP-001",
             Self::HookGapNoTelemetry => "HOOK-GAP-002",
+            Self::ConfigInvalid => "CONFIG-001",
+        }
+    }
+
+    #[must_use]
+    pub fn summary(self) -> &'static str {
+        match self {
+            Self::McpSupplyUnpinned => "MCP package is not pinned to a version.",
+            Self::McpSupplyLatest => "MCP package uses a latest tag.",
+            Self::McpSupplyGitNoCommit => "MCP server is a git URL without a commit.",
+            Self::McpSupplyLocalScript => "MCP server runs a local script.",
+            Self::McpPermBroadFilesystem => "MCP server can read a broad filesystem path.",
+            Self::McpPermShellExec => "MCP server command is a shell.",
+            Self::McpPermDocker => "MCP server runs Docker with a privileged or root mount.",
+            Self::McpPermDatabase => "MCP server points at a database.",
+            Self::McpRemotePlainHttp => "Remote MCP server uses plain HTTP.",
+            Self::McpRemoteNoAuth => "Remote MCP server has no authentication configured.",
+            Self::SecretInConfig => "Secret material found in an agent config.",
+            Self::SecretInEnv => "Secret material found in an env block.",
+            Self::SecretInArgs => "Secret material found in command arguments.",
+            Self::AgentAutonomyAutoApprove => "Agent is set to approve actions without a prompt.",
+            Self::AgentAutonomyDangerousPermissions => {
+                "Agent permission mode allows a broad or bypass action."
+            }
+            Self::ToolPoisonHiddenInstructions => "Instruction text tries to hide a tool action.",
+            Self::ToolPoisonExfiltration => "Instruction text tries to send data out.",
+            Self::HookGapNoGuard => "Agent is configured and Guard hooks are not installed.",
+            Self::HookGapNoTelemetry => "Agent has no telemetry upload configured.",
+            Self::ConfigInvalid => "Agent config file is not valid JSON or TOML.",
         }
     }
 }

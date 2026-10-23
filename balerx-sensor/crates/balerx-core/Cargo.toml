@@ -25,6 +25,7 @@ glob.workspace = true
 tracing.workspace = true
 dirs.workspace = true
 hostname.workspace = true
+sha2.workspace = true
 
 [lints]
 workspace = true

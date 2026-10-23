@@ -16,7 +16,7 @@ Nothing is uploaded unless you run `balerx upload` or `balerx policy pull` with 
 
 ## Install
 
-Supported platforms are Windows, macOS, and Linux. Windows is the primary agent platform; macOS and Linux use the same commands. Prebuilt binaries are GitHub Releases. The current scanner version is 0.1.2.
+Supported platforms are Windows, macOS, and Linux. Windows is the primary agent platform; macOS and Linux use the same commands. Prebuilt binaries are GitHub Releases. The current scanner version is 0.1.3.
 
 ### Build from source
 
@@ -42,7 +42,7 @@ cargo build --locked --release
 .\target\release\balerx.exe --version
 ```
 
-`balerx 0.1.2` is the expected first line. Add `target/release` to your `PATH`, or copy the binary to a directory already on `PATH`.
+`balerx 0.1.3` is the expected first line. Add `target/release` to your `PATH`, or copy the binary to a directory already on `PATH`.
 
 ### Prebuilt binary
 
@@ -139,11 +139,11 @@ balerx scan --json scan.json --sarif scan.sarif --html report.html
 
 | Code | When |
 | --- | --- |
-| 0 | No critical or high finding. `balerx diff` also returns 0 when the lockfile matches. |
-| 1 | At least one high finding, or `balerx diff` found drift, or the command failed (missing lockfile, missing API URL). |
-| 2 | At least one critical finding. Critical wins over high. |
+| 0 | No critical or high finding. `balerx diff` also returns 0 when the lockfile matches. `balerx canary check` returns 0 when the path is not a planted canary. |
+| 1 | At least one high finding, or `balerx diff` found drift, or the command failed (missing lockfile, missing file, missing API URL). `balerx canary check` returns 1 when the file is missing. `balerx guard status` returns 1 when no hook is installed. |
+| 2 | At least one critical finding. Critical wins over high. `balerx canary check` returns 2 when the path is a planted canary. A Claude Code deny also exits 2. |
 
-Medium, low, and info findings stay on exit code 0. These codes were checked with `balerx scan` against a medium-only config (0), a plain-HTTP config (1), and a config containing an access-key-shaped value (2).
+Medium, low, and info findings stay on exit code 0 unless you pass `--fail-on`. `--fail-on critical|high|medium|low|info` exits 1 when any finding is at or above that severity. These default codes were checked with `balerx scan` against a medium-only config (0), a plain-HTTP config (1), and a config containing an access-key-shaped value (2).
 
 ## Commands
 
@@ -151,26 +151,29 @@ Flags below are the ones `balerx <command> --help` prints. `-h` and `--help` exi
 
 | Command | What it does |
 | --- | --- |
-| `balerx scan` | Discover agents and report config findings. Nothing is uploaded. |
+| `balerx scan [PATH]` | Discover agents and report config findings. A path scans that directory or one config file. Nothing is uploaded. |
+| `balerx scan --format json\|sarif\|text` | Write that report to stdout. |
+| `balerx scan --fail-on <SEVERITY>` | Exit 1 at or above `critical`, `high`, `medium`, `low`, or `info`. |
 | `balerx scan --json <FILE>` | Also write findings JSON. |
-| `balerx scan --sarif <FILE>` | Also write SARIF 2.1.0. |
+| `balerx scan --sarif <FILE>` | Also write SARIF 2.1.0, including `driver.rules` and line regions when known. |
 | `balerx scan --html <FILE>` | Also write a single-file HTML report. |
-| `balerx scan -q, --quiet` | Skip the terminal report. |
-| `balerx lock` | Write `balerx.lock` in the current directory. |
+| `balerx scan -q, --quiet` | Skip the terminal report and turn tracing off. Logs go to stderr. Color follows `NO_COLOR` and whether stdout is a terminal. |
+| `balerx lock` | Write `balerx.lock` in the current directory. MCP servers, a config content hash, and home-relative paths are recorded. The hostname is omitted. |
 | `balerx lock -o, --output <PATH>` | Write the lockfile somewhere else. |
-| `balerx diff` | Compare the current machine with `balerx.lock`. |
+| `balerx diff` | Compare the current machine with `balerx.lock`, including MCP servers that were added, removed, or changed. |
 | `balerx diff -l, --lockfile <PATH>` | Compare against another lockfile. |
-| `balerx guard install <AGENT>` | Install local hooks. `<AGENT>` is `claude-code` or `cursor`. |
-| `balerx guard uninstall <AGENT>` | Remove those hooks. |
-| `balerx hook --event-type <EVENT_TYPE>` | Read one JSON event on stdin and print an allow or deny decision. Agents call this. |
+| `balerx guard install <AGENT>` | Merge local hooks. `<AGENT>` is `claude-code` (`~/.claude/settings.json`) or `cursor` (`~/.cursor/hooks.json`). Existing hooks stay. |
+| `balerx guard uninstall <AGENT>` | Remove only Balerx hook commands. Other hooks stay. No backup is restored. |
+| `balerx guard status` | Show install state, `fail_open`, `timeout_ms`, and the log path. |
+| `balerx hook --event-type <EVENT_TYPE>` | Read one JSON event on stdin and print the agent's native decision (`permissionDecision` for Claude Code, `permission` for Cursor), including `ask`. Agents call this. |
 | `balerx log view` | Show the local activity log. Default `--limit` is 50. |
 | `balerx log view -l, --limit <N>` | Show at most N entries. |
 | `balerx log view -a, --agent <AGENT>` | Keep entries whose agent field equals this string. |
 | `balerx log view -t, --event-type <TYPE>` | Keep entries whose event type equals this string. |
-| `balerx canary plant <TYPE>` | Write a labeled fake credential. `<TYPE>` is `aws`, `env`, `ssh`, or `generic`. |
+| `balerx canary plant <TYPE>` | Write a realistic credential file with no canary banner. `<TYPE>` is `aws`, `env`, `ssh`, or `generic`. The command prints a warning. |
 | `balerx canary plant <TYPE> -l, --location <PATH>` | Choose the file path. The default is `~/.balerx/canaries/` plus a type-specific name. |
 | `balerx canary list` | List planted canaries. |
-| `balerx canary check <PATH>` | Say whether that path is a planted canary. |
+| `balerx canary check <PATH>` | Exit 0, 2, or 1: not a canary, a canary, or a missing file. |
 | `balerx canary remove <CANARY_ID>` | Delete one canary by the id from `plant` or `list`. |
 | `balerx upload --api-url <URL> --api-key <KEY>` | Send data. Also requires `--scan`, `--activity-log`, and/or `--lockfile`. |
 | `balerx upload --scan <FILE>` | Upload findings JSON from `balerx scan --json`. |
@@ -179,7 +182,7 @@ Flags below are the ones `balerx <command> --help` prints. `-h` and `--help` exi
 | `balerx policy pull --api-url <URL> --api-key <KEY>` | Download the organization policy. |
 | `balerx policy pull --output <PATH>` | Write the policy somewhere other than `~/.balerx/policy.yaml`. |
 
-`upload` and `policy pull` accept the same values from `BALERX_API_URL` and `BALERX_API_KEY`. A flag overrides the environment variable. If the URL is missing, the command prints `Pass --api-url or set BALERX_API_URL` and exits 1 without opening a connection.
+`upload` and `policy pull` accept the same values from `BALERX_API_URL` and `BALERX_API_KEY`. `--api-key -` reads the key from stdin. Any other `--api-key` value prints a warning on stderr. If the URL is missing, the command prints `Pass --api-url or set BALERX_API_URL` and exits 1 without opening a connection. A rejected key mentions HTTP 401. A missing file mentions the path (`Could not read file:`).
 
 More detail: [scan](../docs/cli/scan.md), [guard](../docs/cli/guard.md), [policy](../docs/cli/policy.md), [hooks](../docs/HOOKS.md).
 
@@ -267,22 +270,32 @@ jobs:
 
 | Code | JSON `rule_id` | Severity | When it fires |
 | --- | --- | --- | --- |
-| `MCP-SUPPLY-001` | `McpSupplyUnpinned` | medium | `npx` or `uvx` package with no version pin |
-| `MCP-SUPPLY-002` | `McpSupplyLatest` | medium | package uses `@latest` |
-| `MCP-PERM-001` | `McpPermBroadFilesystem` | high | an argument is `/`, `C:\`, or `~` |
-| `MCP-REMOTE-001` | `McpRemotePlainHttp` | high | command or URL uses `http://` and is not localhost |
-| `MCP-REMOTE-002` | `McpRemoteNoAuth` | medium | remote MCP server with no auth |
-| `SECRET-001` | `SecretInConfig` | critical, high, or medium | a secret pattern in a config file. AWS-shaped access keys are critical. GitHub, OpenAI, and Anthropic shapes are high. Generic key and password assignments are medium |
-| `TOOL-POISON-001` | `ToolPoisonHiddenInstructions` | critical, high, or medium | suspicious instruction text in the current directory. Exfiltration and credential-harvest patterns are critical. Hidden tool, obfuscation, ignore-security, and disable-protection patterns are high. Hidden shell calls are medium |
+| `MCP-SUPPLY-001` | `McpSupplyUnpinned` | medium | `npx`, `uvx`, `pip`, or a Docker image with no version pin. `-y` and `--yes` are flags, not package names. `@scope/pkg@1.2.3` and `uvx`/`pip` `==` specs are pinned. `@latest` is not this rule |
+| `MCP-SUPPLY-002` | `McpSupplyLatest` | medium | package or image uses `@latest`, `:latest`, or `*` |
+| `MCP-PERM-001` | `McpPermBroadFilesystem` | high | an argument is `/`, `C:\`, `~`, `$HOME`, `/home`, `/Users`, `/root`, or one home directory such as `/home/dev` |
+| `MCP-PERM-002` | `McpPermShellExec` | high | the server command is a shell (`bash`, `sh`, `zsh`, `powershell`, `pwsh`, `cmd`) |
+| `MCP-PERM-003` | `McpPermDocker` | high | Docker or Podman is started with `--privileged` or a root mount |
+| `MCP-PERM-004` | `McpPermDatabase` | medium | the command is a database client, or the URL is a database URL |
+| `MCP-REMOTE-001` | `McpRemotePlainHttp` | high | `http://` whose host is not exactly `localhost`, `127.0.0.1`, `::1`, or `0.0.0.0`. `localhost.attacker.example` is not local |
+| `MCP-REMOTE-002` | `McpRemoteNoAuth` | medium | a remote `http` or `https` server with no token, key, secret, or auth field |
+| `SECRET-001` | `SecretInConfig` | critical, high, or medium | a secret pattern in a config file. AWS-shaped access keys are critical. GitHub, OpenAI (`sk-` and `sk-proj-`), and Anthropic (`sk-ant-`) shapes are high. Slack `xoxb-`, Stripe `sk_live_`, `github_pat_`, and URLs with passwords are detected. Generic assignments are medium |
+| `SECRET-002` | `SecretInEnv` | same as SECRET-001 | the same patterns inside an `env` or `environment` field |
+| `SECRET-003` | `SecretInArgs` | same as SECRET-001 | the same patterns inside `args` or `arguments` |
+| `AGENT-AUTONOMY-001` | `AgentAutonomyAutoApprove` | high | Codex `approval_policy` is `never` |
+| `AGENT-AUTONOMY-002` | `AgentAutonomyDangerousPermissions` | high | Claude `bypassPermissions` or `Bash(*)`, or Codex `sandbox_mode` `danger-full-access` |
+| `TOOL-POISON-001` | `ToolPoisonHiddenInstructions` | critical, high, or medium | hidden instruction text in the scan directory |
+| `TOOL-POISON-002` | `ToolPoisonExfiltration` | critical, high, or medium | a "Data Exfiltration" instruction pattern |
+| `HOOK-GAP-001` | `HookGapNoGuard` | medium | Claude Code or Cursor has a config file and no Balerx hook command in it |
+| `CONFIG-001` | `ConfigInvalid` | high | a discovered config file is not valid JSON or TOML |
 
-`RuleId` also defines `MCP-SUPPLY-003`, `MCP-SUPPLY-004`, `MCP-PERM-002`, `MCP-PERM-003`, `MCP-PERM-004`, `SECRET-002`, `SECRET-003`, `AGENT-AUTONOMY-001`, `AGENT-AUTONOMY-002`, `TOOL-POISON-002`, `HOOK-GAP-001`, and `HOOK-GAP-002`. This version of `balerx scan` does not emit them.
+`MCP-SUPPLY-003`, `MCP-SUPPLY-004`, and `HOOK-GAP-002` are planned. This version of `balerx scan` does not emit them. Duplicate findings with the same rule, resource, title, and evidence are collapsed. The risk label is CRITICAL when there is a critical finding or the score is above 75, HIGH when there are 3 or more high findings or the score is above 50, MEDIUM when any high or medium finding remains or the score is above 25, and LOW otherwise. Three high findings are HIGH even though 3 × 10 is 30.
 
 Guard's built-in policy, used when `~/.balerx/policy.yaml` is missing:
 
 | Rule | Action | Match |
 | --- | --- | --- |
 | `deny_ssh_keys` | deny | `**/.ssh/id_*` |
-| `deny_env_files` | deny | `**/.env` |
+| `deny_env_files` | deny | `**/.env*` |
 | `deny_pem_files` | deny | `**/*.pem` |
 | `deny_curl_pipe_sh` | deny | `curl` piped to `sh` |
 | `ask_force_push` | ask | `git push --force` |
@@ -318,7 +331,7 @@ The activity log is `activity.jsonl` under the OS local data directory:
 
 **`install.sh` says there is no release.** The checksum download failed. Build from source with the `cargo install` command above.
 
-**Hooks did not fire.** `balerx guard install claude-code` writes `~/.claude.json`. `balerx guard install cursor` writes `~/.cursor/hooks.json`. Re-open the agent after installing.
+**Hooks did not fire.** `balerx guard install claude-code` merges `hooks.PreToolUse` and `hooks.PostToolUse` into `~/.claude/settings.json`. `balerx guard install cursor` merges `beforeShellExecution`, `beforeMCPExecution`, and `beforeReadFile` into `~/.cursor/hooks.json` and keeps `"version": 1`. Run `balerx guard status`, then re-open the agent.
 
 ## Uninstall
 

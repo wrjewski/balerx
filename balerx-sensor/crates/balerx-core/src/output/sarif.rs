@@ -26,6 +26,15 @@ pub struct SarifDriver {
     pub version: String,
     #[serde(rename = "informationUri")]
     pub information_uri: String,
+    pub rules: Vec<SarifRule>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SarifRule {
+    pub id: String,
+    #[serde(rename = "shortDescription")]
+    pub short_description: SarifMessage,
+    pub help: SarifMessage,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -52,6 +61,14 @@ pub struct SarifLocation {
 pub struct SarifPhysicalLocation {
     #[serde(rename = "artifactLocation")]
     pub artifact_location: SarifArtifactLocation,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub region: Option<SarifRegion>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SarifRegion {
+    #[serde(rename = "startLine")]
+    pub start_line: u32,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -61,20 +78,38 @@ pub struct SarifArtifactLocation {
 
 #[must_use]
 pub fn to_sarif(result: &ScanResult) -> SarifReport {
+    let mut rules = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for finding in &result.findings {
+        let id = finding.rule_id.to_string();
+        if seen.insert(id.clone()) {
+            rules.push(SarifRule {
+                id,
+                short_description: SarifMessage {
+                    text: finding.rule_id.summary().to_string(),
+                },
+                help: SarifMessage {
+                    text: finding.rule_id.summary().to_string(),
+                },
+            });
+        }
+    }
+
     let results: Vec<SarifResult> = result
         .findings
         .iter()
-        .map(|f| SarifResult {
-            rule_id: f.rule_id.to_string(),
-            level: severity_to_sarif_level(f.severity),
+        .map(|finding| SarifResult {
+            rule_id: finding.rule_id.to_string(),
+            level: severity_to_sarif_level(finding.severity),
             message: SarifMessage {
-                text: format!("{}: {}", f.title, f.description),
+                text: format!("{}: {}", finding.title, finding.description),
             },
             locations: vec![SarifLocation {
                 physical_location: SarifPhysicalLocation {
                     artifact_location: SarifArtifactLocation {
-                        uri: f.affected_resource.clone(),
+                        uri: relative_uri(&finding.affected_resource),
                     },
+                    region: finding.line.map(|start_line| SarifRegion { start_line }),
                 },
             }],
         })
@@ -89,11 +124,27 @@ pub fn to_sarif(result: &ScanResult) -> SarifReport {
                     name: "Balerx Gate".to_string(),
                     version: result.device.balerx_version.clone(),
                     information_uri: "https://github.com/wrjewski/balerx".to_string(),
+                    rules,
                 },
             },
             results,
         }],
     }
+}
+
+fn relative_uri(path: &str) -> String {
+    let normalized = path.replace('\\', "/");
+    if let Ok(cwd) = std::env::current_dir() {
+        let cwd = cwd.to_string_lossy().replace('\\', "/");
+        if normalized == cwd {
+            return ".".to_string();
+        }
+        let prefix = format!("{cwd}/");
+        if let Some(rest) = normalized.strip_prefix(&prefix) {
+            return rest.to_string();
+        }
+    }
+    normalized
 }
 
 fn severity_to_sarif_level(severity: FindingSeverity) -> String {

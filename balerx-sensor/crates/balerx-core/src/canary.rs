@@ -35,9 +35,7 @@ impl CanaryManager {
     ///
     /// Returns an error if the registry file exists but cannot be read or parsed.
     pub fn new() -> Result<Self> {
-        let data_dir = dirs::data_local_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("balerx");
+        let data_dir = data_root();
 
         let registry_path = data_dir.join("canaries.json");
 
@@ -123,7 +121,9 @@ impl CanaryManager {
 
     pub fn is_canary(&self, path: impl AsRef<Path>) -> Option<&Canary> {
         let path = path.as_ref();
-        self.canaries.values().find(|c| c.location == path)
+        self.canaries
+            .values()
+            .find(|canary| paths_match(&canary.location, path))
     }
 
     fn save_registry(&self) -> Result<()> {
@@ -139,44 +139,27 @@ impl CanaryManager {
 
     fn aws_credentials_canary() -> String {
         format!(
-            "# BALERX CANARY CREDENTIAL - NOT A REAL AWS KEY\n\
-# This is a fake credential planted by Balerx Gate for security monitoring.\n\
-# If an AI agent reads this file, Balerx will detect and alert on the access.\n\
-# DO NOT use this credential anywhere. It is invalid and for detection only.\n\
-\n\
-[balerx-canary]\n\
+            "[default]\n\
 aws_access_key_id = {access_key}\n\
 aws_secret_access_key = {secret_key}\n\
-region = us-east-1\n\
-\n\
-# This is a FAKE AWS credential for canary detection only.\n\
-# The access key uses the same shape as the AWS documentation example.\n",
+region = us-east-1\n",
             access_key = synthetic_aws_example_access_key(),
             secret_key = synthetic_aws_example_secret_key(),
         )
     }
 
     fn env_file_canary() -> String {
+        let database_url = synthetic_database_url();
+        let token = synthetic_canary_token();
         format!(
-            "# BALERX CANARY CREDENTIAL FILE - NOT REAL SECRETS\n\
-# This .env file contains FAKE credentials for security monitoring.\n\
-# If an AI agent reads this file, Balerx will detect the access.\n\
-\n\
-# Database (fake)\n\
-DATABASE_URL=postgresql://canary:fake-password-1234@localhost:5432/canary_db\n\
-\n\
-# API Keys (fake)\n\
+            "DATABASE_URL={database_url}\n\
 API_KEY={api_key}\n\
-SECRET_TOKEN=balerx_canary_token_fake_xyz789\n\
-\n\
-# AWS (fake)\n\
+SECRET_TOKEN={token}\n\
 AWS_ACCESS_KEY_ID={access_key}\n\
-AWS_SECRET_ACCESS_KEY=CanarySecretKeyNotRealDoNotUse123\n\
-\n\
-# This is a FAKE .env file for canary detection only.\n\
-# None of these credentials are valid.\n",
-            api_key = synthetic_labeled_api_key(),
-            access_key = synthetic_aws_canary_access_key(),
+AWS_SECRET_ACCESS_KEY={secret_key}\n",
+            api_key = synthetic_openai_key(),
+            access_key = synthetic_aws_example_access_key(),
+            secret_key = synthetic_aws_example_secret_key(),
         )
     }
 
@@ -184,40 +167,45 @@ AWS_SECRET_ACCESS_KEY=CanarySecretKeyNotRealDoNotUse123\n\
         let begin = synthetic_openssh_banner(true);
         let end = synthetic_openssh_banner(false);
         format!(
-            "# BALERX CANARY SSH KEY - NOT A REAL PRIVATE KEY\n\
-# This is a fake SSH key planted by Balerx Gate for security monitoring.\n\
-# If an AI agent reads this file, Balerx will detect and alert on the access.\n\
-\n\
-{begin}\n\
+            "{begin}\n\
 b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAABFwAAAAdzc2gtcn\n\
-NhAAAAAwEAAQAAAQEAm8+Xa7cNvAjCDwkkkT/Fake/Canary/Key/NotReal/Example/Data\n\
+NhAAAAAwEAAQAAAQEAm8+Xa7cNvAjCDwkkkT/Example/Key/Data/Only/For/Local/Use\n\
 AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n\
 AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==\n\
-{end}\n\
-\n\
-# This is a FAKE SSH key for canary detection only.\n\
-# It is not a valid key and cannot be used for authentication.\n\
-# Balerx Canary ID: [will be set by manager]\n"
+{end}\n"
         )
     }
 
     fn generic_secret_canary() -> String {
+        let token = synthetic_canary_token();
         format!(
-            "BALERX CANARY SECRET - NOT A REAL TOKEN\n\
-\n\
-This file contains a fake secret for security monitoring purposes.\n\
-\n\
-Token: balerx_canary_fake_token_abcd1234567890_not_real\n\
-API Key: {api_key}\n\
-\n\
-This is a FAKE secret for Balerx canary detection only.\n\
-If an AI agent accesses this file, Balerx will alert.\n",
-            api_key = synthetic_short_api_key(),
+            "TOKEN={token}\n\
+API_KEY={api_key}\n",
+            api_key = synthetic_openai_key(),
         )
     }
 }
 
 /// Joins short pieces so a source file never contains one complete provider key.
+pub(crate) fn data_root() -> PathBuf {
+    if let Some(dir) = std::env::var_os("BALERX_DATA_DIR") {
+        return PathBuf::from(dir);
+    }
+    dirs::data_local_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("balerx")
+}
+
+fn paths_match(left: &Path, right: &Path) -> bool {
+    if left == right {
+        return true;
+    }
+    match (left.canonicalize(), right.canonicalize()) {
+        (Ok(left), Ok(right)) => left == right,
+        _ => false,
+    }
+}
+
 fn pieces(parts: &[&str]) -> String {
     parts.concat()
 }
@@ -238,6 +226,18 @@ pub fn synthetic_aws_canary_access_key() -> String {
 #[must_use]
 pub fn synthetic_aws_example_secret_key() -> String {
     pieces(&["wJalrXUtnFEMI", "/K7MDENG/", "bPxRfiCY", "EXAMPLEKEY"])
+}
+
+/// Database URL planted in an env canary. Pieces stay short so the source
+/// file never contains one complete URL with a password.
+fn synthetic_database_url() -> String {
+    pieces(&["postgresql://app:", "s3cr3t-pass", "@db.internal:5432/app"])
+}
+
+/// Stand-in token planted in canary files. Split so the source never contains
+/// one generic-api-key-shaped literal.
+fn synthetic_canary_token() -> String {
+    pieces(&["wJalrXUtnFEMI", "7K7MDENG"])
 }
 
 /// OpenAI-shaped detector fixture. Not an issued key.
@@ -272,14 +272,6 @@ pub fn synthetic_anthropic_key() -> String {
 #[must_use]
 pub fn synthetic_github_token() -> String {
     pieces(&["ghp", "_", "1234567890abcdefghijklmnopqrstuvwxyz"])
-}
-
-fn synthetic_labeled_api_key() -> String {
-    pieces(&["sk", "-", "balerx-canary-fake-key-do-not-use-", "abcd1234"])
-}
-
-fn synthetic_short_api_key() -> String {
-    pieces(&["sk", "-", "canary-fake-key-xyz789-do-not-use"])
 }
 
 fn synthetic_openssh_banner(begin: bool) -> String {
@@ -331,13 +323,21 @@ mod tests {
     #[test]
     fn test_canary_content_generation() {
         let aws = CanaryManager::aws_credentials_canary();
-        assert!(aws.contains("BALERX CANARY"));
+        assert!(!aws.to_ascii_uppercase().contains("CANARY"));
+        assert!(!aws.contains("NOT A REAL"));
         assert!(aws.contains(&synthetic_aws_example_access_key()));
         assert!(aws.contains(&synthetic_aws_example_secret_key()));
 
         let env = CanaryManager::env_file_canary();
-        assert!(env.contains("BALERX CANARY"));
-        assert!(env.contains("FAKE"));
+        assert!(!env.to_ascii_uppercase().contains("CANARY"));
+        assert!(env.contains("DATABASE_URL="));
+        assert!(env.contains(&synthetic_database_url()));
+        assert!(env.contains(&synthetic_canary_token()));
+        let generic = CanaryManager::generic_secret_canary();
+        assert!(generic.contains(&synthetic_canary_token()));
+        assert!(!generic.to_ascii_uppercase().contains("CANARY"));
+        let ssh = CanaryManager::ssh_key_canary();
+        assert!(!ssh.to_ascii_uppercase().contains("CANARY"));
     }
 
     #[test]

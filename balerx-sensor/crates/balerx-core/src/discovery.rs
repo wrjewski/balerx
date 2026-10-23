@@ -1,8 +1,8 @@
 use crate::agent::{Agent, AgentDefinition, AgentStatus, Platform};
-use crate::config::McpConfig;
+use crate::config::{self, McpConfig};
 use crate::secret::SecretDetector;
 use std::path::PathBuf;
-use tracing::{debug, info, warn};
+use tracing::{debug, info};
 
 pub struct AgentDiscovery {
     definitions: Vec<AgentDefinition>,
@@ -40,8 +40,8 @@ impl AgentDiscovery {
                 continue;
             }
 
-            if let Some(expanded) = def.expand_path(&config.path) {
-                if expanded.exists() {
+            for expanded in def.expand_config_paths(&config.path) {
+                if expanded.is_file() {
                     debug!("Found config for {}: {:?}", def.name, expanded);
                     config_paths.push(expanded);
                     found_any = true;
@@ -160,30 +160,15 @@ impl ConfigScanner {
             issues: Vec::new(),
         };
 
-        if path.extension().and_then(|s| s.to_str()) == Some("json") {
-            match McpConfig::parse_file(path) {
-                Ok(config) => {
-                    let issues = config.find_issues();
-                    result.issues = issues;
-                    result.mcp_config = Some(config.clone());
-
-                    let content = std::fs::read_to_string(path)?;
-                    let json: serde_json::Value = serde_json::from_str(&content)?;
-                    let secrets = self
-                        .secret_detector
-                        .scan_json(&json, &path.to_string_lossy());
-                    result.secrets_found = secrets;
-                }
-                Err(e) => {
-                    warn!("Failed to parse MCP config at {:?}: {}", path, e);
-                }
-            }
+        let content = std::fs::read_to_string(path)?;
+        let inspected = config::inspect_contents(path, &content);
+        result.issues = inspected.issues;
+        result.mcp_config = inspected.mcp;
+        let location = path.to_string_lossy();
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+            result.secrets_found = self.secret_detector.scan_json(&json, &location);
         } else {
-            let content = std::fs::read_to_string(path)?;
-            let secrets = self
-                .secret_detector
-                .scan_text(&content, &path.to_string_lossy());
-            result.secrets_found = secrets;
+            result.secrets_found = self.secret_detector.scan_text(&content, &location);
         }
 
         Ok(result)
@@ -199,6 +184,7 @@ impl Default for ConfigScanner {
 #[derive(Debug)]
 pub struct ScanConfigResult {
     pub path: PathBuf,
+    #[allow(dead_code)]
     pub mcp_config: Option<McpConfig>,
     pub secrets_found: Vec<crate::secret::SecretMatch>,
     pub issues: Vec<crate::config::ConfigIssue>,
