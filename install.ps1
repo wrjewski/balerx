@@ -17,6 +17,38 @@ function Get-BalerxTarget {
   return "$archName-pc-windows-msvc"
 }
 
+function Get-BalerxReleaseBase([string]$Repo) {
+  if ($env:BALERX_RELEASE_BASE_URL) { return $env:BALERX_RELEASE_BASE_URL }
+  if ($env:BALERX_VERSION) {
+    $version = $env:BALERX_VERSION
+    if ($version.StartsWith('v')) { $version = $version.Substring(1) }
+    return "https://github.com/$Repo/releases/download/v$version"
+  }
+  return "https://github.com/$Repo/releases/latest/download"
+}
+
+function Confirm-BalerxSignature([string]$Repo, [string]$Base, [string]$Work) {
+  $cosign = Get-Command cosign -ErrorAction SilentlyContinue
+  if (-not $cosign) {
+    Write-Host "cosign is not installed. Checked SHA256SUMS only."
+    return
+  }
+  $bundle = Join-Path $Work 'SHA256SUMS.bundle'
+  try {
+    Invoke-WebRequest -Uri "$Base/SHA256SUMS.bundle" -OutFile $bundle -UseBasicParsing
+  } catch {
+    Write-Error "cosign is installed, but SHA256SUMS.bundle was not downloaded."
+    exit 1
+  }
+  $identity = "^https://github.com/$Repo/\.github/workflows/release\.yml@refs/tags/v"
+  $sums = Join-Path $Work 'SHA256SUMS'
+  & cosign verify-blob --bundle $bundle --certificate-oidc-issuer "https://token.actions.githubusercontent.com" --certificate-identity-regexp $identity $sums
+  if ($LASTEXITCODE -ne 0) {
+    Write-Error "Signature verification failed for SHA256SUMS."
+    exit 1
+  }
+}
+
 if ($env:BALERX_INSTALL_LIB -eq '1') {
   return
 }
@@ -24,7 +56,7 @@ if ($env:BALERX_INSTALL_LIB -eq '1') {
 $repo = if ($env:BALERX_REPO) { $env:BALERX_REPO } elseif ($env:BALERX_GITHUB_REPO) { $env:BALERX_GITHUB_REPO } else { 'wrjewski/balerx' }
 $target = Get-BalerxTarget
 $asset = "balerx-$target.zip"
-$base = if ($env:BALERX_RELEASE_BASE_URL) { $env:BALERX_RELEASE_BASE_URL } else { "https://github.com/$repo/releases/latest/download" }
+$base = Get-BalerxReleaseBase $repo
 $work = Join-Path ([System.IO.Path]::GetTempPath()) ("balerx-install-" + [guid]::NewGuid().ToString('n'))
 New-Item -ItemType Directory -Path $work | Out-Null
 
@@ -52,6 +84,7 @@ try {
     Write-Error "Checksum verification failed for $asset."
     exit 1
   }
+  Confirm-BalerxSignature $repo $base $work
   Expand-Archive -Path $assetPath -DestinationPath $work -Force
   $dest = Join-Path $env:LOCALAPPDATA 'balerx'
   New-Item -ItemType Directory -Force -Path $dest | Out-Null

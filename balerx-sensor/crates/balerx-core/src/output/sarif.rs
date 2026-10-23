@@ -133,18 +133,8 @@ pub fn to_sarif(result: &ScanResult) -> SarifReport {
 }
 
 fn relative_uri(path: &str) -> String {
-    let normalized = path.replace('\\', "/");
-    if let Ok(cwd) = std::env::current_dir() {
-        let cwd = cwd.to_string_lossy().replace('\\', "/");
-        if normalized == cwd {
-            return ".".to_string();
-        }
-        let prefix = format!("{cwd}/");
-        if let Some(rest) = normalized.strip_prefix(&prefix) {
-            return rest.to_string();
-        }
-    }
-    normalized
+    let cwd = std::env::current_dir().ok();
+    crate::lockfile::portable_uri(path, cwd.as_deref(), dirs::home_dir().as_deref())
 }
 
 fn severity_to_sarif_level(severity: FindingSeverity) -> String {

@@ -43,7 +43,7 @@ impl AgentDiscovery {
             for expanded in def.expand_config_paths(&config.path) {
                 if expanded.is_file() {
                     debug!("Found config for {}: {:?}", def.name, expanded);
-                    config_paths.push(expanded);
+                    remember_config(&mut config_paths, expanded);
                     found_any = true;
                 }
             }
@@ -71,6 +71,14 @@ impl AgentDiscovery {
     }
 
     fn is_agent_likely_installed(&self, def: &AgentDefinition) -> bool {
+        if def.id == "cursor" {
+            if let Some(home) = dirs::home_dir() {
+                if home.join(".cursor").is_dir() {
+                    return true;
+                }
+            }
+        }
+
         if def.binary_patterns.is_empty() && def.process_names.is_empty() {
             return false;
         }
@@ -125,6 +133,14 @@ impl AgentDiscovery {
 
         None
     }
+}
+
+fn remember_config(paths: &mut Vec<PathBuf>, expanded: PathBuf) {
+    let canonical = expanded.canonicalize().unwrap_or(expanded);
+    if paths.iter().any(|existing| existing == &canonical) {
+        return;
+    }
+    paths.push(canonical);
 }
 
 impl Default for AgentDiscovery {
@@ -188,4 +204,23 @@ pub struct ScanConfigResult {
     pub mcp_config: Option<McpConfig>,
     pub secrets_found: Vec<crate::secret::SecretMatch>,
     pub issues: Vec<crate::config::ConfigIssue>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::remember_config;
+    use std::fs;
+
+    #[test]
+    fn the_same_config_file_is_recorded_once() {
+        let root = std::env::temp_dir().join(format!("balerx-dedupe-{}", std::process::id()));
+        fs::create_dir_all(&root).expect("dir");
+        let file = root.join("mcp.json");
+        fs::write(&file, "{}").expect("file");
+        let mut paths = Vec::new();
+        remember_config(&mut paths, file.clone());
+        remember_config(&mut paths, root.join(".").join("mcp.json"));
+        assert_eq!(paths.len(), 1);
+        fs::remove_dir_all(&root).ok();
+    }
 }

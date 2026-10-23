@@ -46,6 +46,9 @@ fn help_commands() -> Vec<Vec<&'static str>> {
         vec!["upload", "--help"],
         vec!["policy", "--help"],
         vec!["policy", "pull", "--help"],
+        vec!["doctor", "--help"],
+        vec!["completions", "--help"],
+        vec!["self-update", "--help"],
     ]
 }
 

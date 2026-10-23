@@ -2,6 +2,9 @@
 
 # Balerx Gate scanner
 
+[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://github.com/wrjewski/balerx/blob/main/LICENSE)
+[![Release](https://img.shields.io/github/v/release/wrjewski/balerx)](https://github.com/wrjewski/balerx/releases)
+
 Balerx Gate's scanner is a local, metadata-only check for AI coding agents. `balerx` looks on your machine for known agents and for risky settings in their config: unpinned MCP packages, plain HTTP endpoints, broad filesystem access, and secrets sitting in those files. It is Apache-2.0. An optional hosted dashboard can receive a scan or a Guard activity log only after you pass an API URL and an ingest key from that dashboard.
 
 The scanner does not start MCP servers. It does not read your prompts. A normal scan never leaves the machine.
@@ -16,7 +19,29 @@ Nothing is uploaded unless you run `balerx upload` or `balerx policy pull` with 
 
 ## Install
 
-Supported platforms are Windows, macOS, and Linux. Windows is the primary agent platform; macOS and Linux use the same commands. Prebuilt binaries are GitHub Releases. The current scanner version is 0.1.3.
+Supported platforms are Windows, macOS, and Linux. The commands are the same on each. Prebuilt binaries are GitHub Releases. The current scanner version is 0.1.4.
+
+### Prebuilt binary
+
+`BALERX_REPO` defaults to `wrjewski/balerx`. The scripts download `https://github.com/wrjewski/balerx/releases/latest/download/` and check `SHA256SUMS` before installing. Set `BALERX_VERSION` (for example `0.1.4`) to download that tag instead of the latest release. If `cosign` is on `PATH`, the script also verifies `SHA256SUMS.bundle` (keyless Sigstore). Without `cosign`, the checksum check is the whole verification. If the checksum file is missing, the script prints the `cargo install` command below and exits.
+
+Linux or macOS, into `$HOME/.local/bin`:
+
+```bash
+curl -fsSL "https://raw.githubusercontent.com/wrjewski/balerx/main/install.sh" -o install.sh
+sh install.sh
+balerx --version
+```
+
+Windows, into `%LOCALAPPDATA%\balerx` (`balerx.exe`):
+
+```powershell
+Invoke-WebRequest "https://raw.githubusercontent.com/wrjewski/balerx/main/install.ps1" -OutFile install.ps1
+powershell -File .\install.ps1
+balerx --version
+```
+
+The archive names are `balerx-x86_64-unknown-linux-gnu.tar.gz`, `balerx-aarch64-unknown-linux-gnu.tar.gz`, `balerx-x86_64-apple-darwin.tar.gz`, `balerx-aarch64-apple-darwin.tar.gz`, `balerx-x86_64-pc-windows-msvc.zip`, and `balerx-aarch64-pc-windows-msvc.zip`. The Windows executable is not Authenticode-signed. `SHA256SUMS` is signed. See Troubleshooting for SmartScreen.
 
 ### Build from source
 
@@ -44,29 +69,7 @@ cargo build --locked --release
 .\target\release\balerx.exe --version
 ```
 
-`balerx 0.1.3` is the expected first line. Add `target/release` to your `PATH`, or copy the binary to a directory already on `PATH`.
-
-### Prebuilt binary
-
-`BALERX_REPO` defaults to `wrjewski/balerx`. The scripts download `https://github.com/wrjewski/balerx/releases/latest/download/` and check `SHA256SUMS` before installing. If that checksum is missing, they print the `cargo install` command above and exit.
-
-Linux or macOS, into `$HOME/.local/bin`:
-
-```bash
-curl -fsSL "https://raw.githubusercontent.com/wrjewski/balerx/main/install.sh" -o install.sh
-sh install.sh
-balerx --version
-```
-
-Windows, into `%LOCALAPPDATA%\balerx`:
-
-```powershell
-Invoke-WebRequest "https://raw.githubusercontent.com/wrjewski/balerx/main/install.ps1" -OutFile install.ps1
-powershell -File .\install.ps1
-balerx --version
-```
-
-The archive names are `balerx-x86_64-unknown-linux-gnu.tar.gz`, `balerx-aarch64-unknown-linux-gnu.tar.gz`, `balerx-x86_64-apple-darwin.tar.gz`, `balerx-aarch64-apple-darwin.tar.gz`, `balerx-x86_64-pc-windows-msvc.zip`, and `balerx-aarch64-pc-windows-msvc.zip`. The Windows executable is not Authenticode-signed. See Troubleshooting for SmartScreen.
+`balerx 0.1.4` is the expected first line. Add `target/release` to your `PATH`, or copy the binary to a directory already on `PATH`.
 
 ## Quick start
 
@@ -79,23 +82,23 @@ balerx scan
 This report is from a real run. The directory contained a Cursor `.cursor/mcp.json` with an unpinned `npx` package and an `http://` MCP URL. The machine name is replaced with `workstation`. Default info logs on stderr are omitted here; set `RUST_LOG=error` to hide them. The process exited 1 because of the high finding.
 
 ```text
-╔═══════════════════════════════════════════════════════════════════════╗
-║             Balerx Gate Security Scan Results                        ║
-╚═══════════════════════════════════════════════════════════════════════╝
+╔═════════════════════════════════════════════════════════════════════╗
+║                  Balerx Gate Security Scan Results                  ║
+╚═════════════════════════════════════════════════════════════════════╝
 
 Device: workstation
 Platform: linux Ubuntu 24.04.5 LTS
-Scanned: 2026-10-21 02:02:20 UTC
+Scanned: 2026-10-21 02:02:20 +00:00
 
 ╭─────────────────────────────────────────────────────────────────────╮
-│ RISK SCORE: 14/100 [✓ LOW]
+│ RISK SCORE: 14/100 [LOW]                                            │
 ├─────────────────────────────────────────────────────────────────────┤
-│ Agents Found:    1                                               │
-│ Total Findings:  2                                               │
-│ Critical:        0                                               │
-│ High:            1                                               │
-│ Medium:          1                                               │
-│ Low:             0                                               │
+│ Agents Found:    1                                                  │
+│ Total Findings:  2                                                  │
+│ Critical:        0                                                  │
+│ High:            1                                                  │
+│ Medium:          1                                                  │
+│ Low:             0                                                  │
 ╰─────────────────────────────────────────────────────────────────────╯
 
 DISCOVERED AGENTS:
@@ -112,7 +115,7 @@ FINDINGS:
 │
 │  💡 Suggested Fix:
 │     Use HTTPS instead of plain HTTP for remote connections
-└───────────────────────────────────────────────────────────────────────
+└─────────────────────────────────────────────────────────────────────┘
 
 ┌─ [MEDIUM  ] MCP server 'filesystem' uses unpinned package: some-mcp-server (MCP-SUPPLY-001)
 │
@@ -122,7 +125,7 @@ FINDINGS:
 │
 │  💡 Suggested Fix:
 │     Pin the package to a specific version, e.g., npx -y package@1.2.3
-└───────────────────────────────────────────────────────────────────────
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
 Each finding is a box. The first line is the severity, the title, and the rule code in parentheses. `Agent` is the discovered product. `Resource` is the config file. The suggested fix is the next edit to make.
@@ -159,7 +162,13 @@ Flags below are the ones `balerx <command> --help` prints. `-h` and `--help` exi
 | `balerx scan --json <FILE>` | Also write findings JSON. |
 | `balerx scan --sarif <FILE>` | Also write SARIF 2.1.0, including `driver.rules` and line regions when known. |
 | `balerx scan --html <FILE>` | Also write a single-file HTML report. |
-| `balerx scan -q, --quiet` | Skip the terminal report and turn tracing off. Logs go to stderr. Color follows `NO_COLOR` and whether stdout is a terminal. |
+| `balerx scan -q, --quiet` | Skip the terminal report and turn tracing off. Logs go to stderr. Color follows `NO_COLOR`, `--no-color`, and whether stdout is a terminal. |
+| `balerx scan --no-color` | Disable color. Same as `NO_COLOR`. |
+| `balerx scan --exclude <PATH>` | Drop findings under this path. Repeat the flag for more than one path. |
+| `balerx scan --baseline <FILE>` | Hide findings listed in a JSON file: `{"ignore":[{"rule_id":"MCP-REMOTE-001","resource":".cursor/mcp.json"}]}`. `rule_id` is the rule code. |
+| `balerx doctor` | Print the version, data directory, Guard hook state, and policy path. Offline. Exits 0 when the data directory is usable. |
+| `balerx completions <SHELL>` | Print a completion script for `bash`, `zsh`, `fish`, or `powershell`. |
+| `balerx self-update` | Print the current version and the public install command. It does not download or replace the binary. |
 | `balerx lock` | Write `balerx.lock` in the current directory. MCP servers, a config content hash, and home-relative paths are recorded. The hostname is omitted. |
 | `balerx lock -o, --output <PATH>` | Write the lockfile somewhere else. |
 | `balerx diff` | Compare the current machine with `balerx.lock`, including MCP servers that were added, removed, or changed. |
@@ -172,7 +181,7 @@ Flags below are the ones `balerx <command> --help` prints. `-h` and `--help` exi
 | `balerx log view -l, --limit <N>` | Show at most N entries. |
 | `balerx log view -a, --agent <AGENT>` | Keep entries whose agent field equals this string. |
 | `balerx log view -t, --event-type <TYPE>` | Keep entries whose event type equals this string. |
-| `balerx canary plant <TYPE>` | Write a realistic credential file with no canary banner. `<TYPE>` is `aws`, `env`, `ssh`, or `generic`. The command prints a warning. |
+| `balerx canary plant <TYPE>` | Write a realistic credential file with no canary banner. `<TYPE>` is `aws`, `env`, `ssh`, or `generic`. The command says the access is written to the local activity log. It does not send an alert. |
 | `balerx canary plant <TYPE> -l, --location <PATH>` | Choose the file path. The default is `~/.balerx/canaries/` plus a type-specific name. |
 | `balerx canary list` | List planted canaries. |
 | `balerx canary check <PATH>` | Exit 0, 2, or 1: not a canary, a canary, or a missing file. |
@@ -184,21 +193,27 @@ Flags below are the ones `balerx <command> --help` prints. `-h` and `--help` exi
 | `balerx policy pull --api-url <URL> --api-key <KEY>` | Download the organization policy. |
 | `balerx policy pull --output <PATH>` | Write the policy somewhere other than `~/.balerx/policy.yaml`. |
 
-`upload` and `policy pull` accept the same values from `BALERX_API_URL` and `BALERX_API_KEY`. `--api-key -` reads the key from stdin. Any other `--api-key` value prints a warning on stderr. If the URL is missing, the command prints `Pass --api-url or set BALERX_API_URL` and exits 1 without opening a connection. A rejected key mentions HTTP 401. A missing file mentions the path (`Could not read file:`).
+`upload` and `policy pull` accept the same values from `BALERX_API_URL` and `BALERX_API_KEY`. `--api-key -` reads the key from stdin. A literal `--api-key VALUE` is rejected, because that value shows up in the process list and shell history. If the URL is missing, the command prints `Pass --api-url or set BALERX_API_URL` and exits 1 without opening a connection. A rejected key mentions HTTP 401. A missing file mentions the path (`Could not read file:`).
 
 More detail: [scan](docs/cli/scan.md), [guard](docs/cli/guard.md), [policy](docs/cli/policy.md), [hooks](docs/HOOKS.md).
 
 ## Connect to the dashboard
 
-1. In Balerx Gate onboarding, copy the ingest key and the API URL the dashboard shows. This repository does not name a host.
+The scanner repository is https://github.com/wrjewski/balerx. After you create an account, onboarding shows the API URL for that dashboard. Use that URL. This repository does not hard-code a host.
+
+Monitor is the hosted view of agents you run yourself: traces, tool calls, and incidents. Team is the organization around that view: people, roles, and the machines that upload scans.
+
+1. In Balerx Gate onboarding, copy the ingest key and the API URL the dashboard shows.
 2. Save them in the environment, or pass them as flags:
 
 ```bash
-export BALERX_API_URL
+export BALERX_API_URL="https://YOUR_HOST"
 export BALERX_API_KEY
 balerx scan --json scan.json
 balerx upload --scan scan.json
 ```
+
+`YOUR_HOST` is the origin from onboarding, including the scheme.
 
 A successful scan upload prints `Uploaded scan scan.json`. A successful activity upload prints `Uploaded N activity events from <path>`. A successful policy pull prints `Wrote organization policy to <path>`. A rejected request prints `Upload failed:` or `Policy pull failed:` and exits 1.
 
@@ -206,7 +221,7 @@ The local Guard policy lives at `~/.balerx/policy.yaml` (your user profile on Wi
 
 ## CI
 
-This workflow checks out the scanner, builds it, and scans the repository that contains the workflow. The job fails when `balerx scan` exits 1 or 2. Code scanning must be enabled on that repository before the upload step can succeed.
+Use the composite action. It downloads a prebuilt release, checks `SHA256SUMS`, runs `balerx scan`, and uploads SARIF. The scan step records the exit code so the upload still runs when `--fail-on` exits 1. Code scanning must be enabled on the repository. The workflow needs `security-events: write`.
 
 ```yaml
 name: Balerx Gate
@@ -224,29 +239,15 @@ jobs:
       - name: Check out the project
         uses: actions/checkout@v4
 
-      - name: Check out the scanner
-        uses: actions/checkout@v4
+      - name: Scan
+        uses: wrjewski/balerx/.github/actions/scan@main
         with:
-          repository: wrjewski/balerx
-          path: balerx
-
-      - name: Install the scanner toolchain
-        uses: dtolnay/rust-toolchain@nightly
-
-      - name: Build balerx
-        working-directory: balerx/balerx-sensor
-        run: cargo build --locked --release
-
-      - name: Scan this repository
-        run: balerx/balerx-sensor/target/release/balerx scan --json balerx.json --sarif balerx.sarif
-
-      - name: Upload SARIF to code scanning
-        uses: github/codeql-action/upload-sarif@v3
-        with:
-          sarif_file: balerx.sarif
+          path: .
+          fail-on: high
+          sarif-file: balerx.sarif
 ```
 
-`github/codeql-action/upload-sarif` is the upload path. The `gh` CLI has no `code-scanning` command.
+`version` pins a release (`0.1.4`). Leave it empty to use the latest release. The action lives at `.github/actions/scan` in this repository.
 
 ## Agents and rules
 
@@ -307,7 +308,7 @@ Guard's built-in policy, used when `~/.balerx/policy.yaml` is missing:
 
 ## Configuration
 
-There is no ignore file and no `--exclude` flag. `balerx scan` always reads the agent configs it discovers.
+`--exclude` drops findings under a path. `--baseline` hides findings listed in a JSON file (`rule_id` plus `resource`). Agent config files are still read.
 
 Guard policy is `~/.balerx/policy.yaml`. `balerx policy pull` replaces it. Invalid YAML is rejected and the previous file is left in place. The document shape is in [docs/cli/policy.md](docs/cli/policy.md).
 
@@ -327,7 +328,7 @@ The activity log is `activity.jsonl` under the OS local data directory:
 
 **A config was skipped.** If a file cannot be read, the scan logs `Failed to parse MCP config` or `Failed to scan config` and continues. On Linux and macOS, run as the user who owns the agent profile. Exit code stays 0 when that was the only problem.
 
-**Windows SmartScreen.** Release binaries are unsigned. Windows may say it protected your PC. Choose More info, then Run anyway, or build from source with `cargo build --locked --release` and run `target\release\balerx.exe`.
+**Windows SmartScreen.** Release binaries are not Authenticode-signed. `SHA256SUMS` is signed with keyless Sigstore. Windows may say it protected your PC. Choose More info, then Run anyway, or build from source with `cargo build --locked --release` and run `target\release\balerx.exe`.
 
 **Proxy.** `balerx scan` does not use the network. `balerx upload` and `balerx policy pull` use the first of `ALL_PROXY`, `HTTPS_PROXY`, and `HTTP_PROXY` (lowercase names work too). `NO_PROXY` skips matching hosts. The Windows system proxy setting is not read. A proxy that refuses the connection fails the command with `Upload failed:` or `Policy pull failed:`.
 

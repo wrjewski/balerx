@@ -367,6 +367,38 @@ enum PinState {
     Latest,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackageIdentity {
+    pub name: String,
+    pub version: String,
+    pub registry: &'static str,
+}
+
+/// Package name, version, and registry parsed from an MCP server command.
+///
+/// `npx -y docs@1.2.3` is name `docs`, version `1.2.3`, registry `npm`.
+/// Flags are not part of the name. An empty version means the spec has no pin.
+#[must_use]
+pub fn package_identity(command: &str, args: &[String]) -> Option<PackageIdentity> {
+    let base = command_base(command);
+    let registry = match base {
+        "npx" | "npm" => "npm",
+        "uvx" | "uv" | "pip" | "pip3" => "pypi",
+        "docker" | "podman" => "docker",
+        _ => return None,
+    };
+    let spec = package_spec(command, args)?;
+    let (name, version) = split_name_version(base, &spec.name);
+    if name.is_empty() {
+        return None;
+    }
+    Some(PackageIdentity {
+        name,
+        version,
+        registry,
+    })
+}
+
 fn package_spec(command: &str, args: &[String]) -> Option<PackageSpec> {
     let base = command_base(command);
     let spec = match base {
@@ -381,7 +413,36 @@ fn package_spec(command: &str, args: &[String]) -> Option<PackageSpec> {
 }
 
 fn classify_pin(tool: &str, spec: &str) -> PinState {
-    let version = match tool {
+    match package_version(tool, spec)
+        .map(str::trim)
+        .filter(|version| !version.is_empty())
+    {
+        Some("latest" | "*") => PinState::Latest,
+        Some(_) => PinState::Pinned,
+        None => PinState::Unpinned,
+    }
+}
+
+fn split_name_version(tool: &str, spec: &str) -> (String, String) {
+    let version = package_version(tool, spec)
+        .map(str::trim)
+        .filter(|version| !version.is_empty())
+        .unwrap_or("")
+        .to_string();
+    if version.is_empty() {
+        return (spec.to_string(), String::new());
+    }
+    let suffix = match tool {
+        "uvx" | "uv" | "pip" | "pip3" if spec.contains("==") => format!("=={version}"),
+        "docker" | "podman" => format!(":{version}"),
+        _ => format!("@{version}"),
+    };
+    let name = spec.strip_suffix(&suffix).unwrap_or(spec).to_string();
+    (name, version)
+}
+
+fn package_version<'a>(tool: &str, spec: &'a str) -> Option<&'a str> {
+    match tool {
         "uvx" | "uv" | "pip" | "pip3" => spec
             .split_once("==")
             .map(|(_, version)| version)
@@ -394,11 +455,6 @@ fn classify_pin(tool: &str, spec: &str) -> PinState {
             }
         }),
         _ => npm_version(spec),
-    };
-    match version.map(str::trim).filter(|version| !version.is_empty()) {
-        Some("latest" | "*") => PinState::Latest,
-        Some(_) => PinState::Pinned,
-        None => PinState::Unpinned,
     }
 }
 
@@ -742,4 +798,26 @@ pub enum IssueType {
     DangerousPermissions,
     ShellExec,
     DatabaseAccess,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::package_identity;
+
+    #[test]
+    fn npm_package_keeps_the_name_and_version() {
+        let identity = package_identity("npx", &["-y".to_string(), "docs@1.2.3".to_string()])
+            .expect("package");
+        assert_eq!(identity.name, "docs");
+        assert_eq!(identity.version, "1.2.3");
+        assert_eq!(identity.registry, "npm");
+    }
+
+    #[test]
+    fn scoped_npm_package_splits_on_the_version() {
+        let identity = package_identity("npx", &["-y".to_string(), "@scope/pkg@1.2.3".to_string()])
+            .expect("package");
+        assert_eq!(identity.name, "@scope/pkg");
+        assert_eq!(identity.version, "1.2.3");
+    }
 }

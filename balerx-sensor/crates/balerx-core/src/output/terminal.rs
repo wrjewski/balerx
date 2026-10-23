@@ -1,10 +1,22 @@
 use crate::finding::{Finding, FindingSeverity, ScanResult};
 
 fn color_enabled() -> bool {
-    if std::env::var_os("NO_COLOR").is_some() {
+    if no_color() {
         return false;
     }
     std::io::IsTerminal::is_terminal(&std::io::stdout())
+}
+
+/// True when color should be off. `--no-color` is the same switch as `NO_COLOR`.
+#[must_use]
+pub fn no_color() -> bool {
+    std::env::var_os("NO_COLOR").is_some() || std::env::args().any(|arg| arg == "--no-color")
+}
+
+const INNER: usize = 69;
+
+fn bar(left: char, fill: char, right: char) -> String {
+    format!("{left}{}{right}", fill.to_string().repeat(INNER))
 }
 
 fn paint(text: &str, code: &str) -> String {
@@ -16,14 +28,23 @@ fn paint(text: &str, code: &str) -> String {
 }
 
 fn row(text: &str) -> String {
-    const WIDTH: usize = 67;
-    format!("│ {text:<WIDTH$} │")
+    let width = INNER.saturating_sub(2);
+    format!("│ {text:<width$} │")
 }
 
 pub fn print_scan_result(result: &ScanResult) {
-    println!("\n╔═══════════════════════════════════════════════════════════════════════╗");
-    println!("║             Balerx Gate Security Scan Results                        ║");
-    println!("╚═══════════════════════════════════════════════════════════════════════╝\n");
+    let title = "Balerx Gate Security Scan Results";
+    let pad = INNER.saturating_sub(title.len());
+    let left = pad / 2;
+    let right = pad - left;
+    let mut heading = String::from("║");
+    heading.push_str(&" ".repeat(left));
+    heading.push_str(title);
+    heading.push_str(&" ".repeat(right));
+    heading.push('║');
+    println!("\n{}", bar('╔', '═', '╗'));
+    println!("{heading}");
+    println!("{}\n", bar('╚', '═', '╝'));
 
     println!("Device: {}", result.device.hostname);
     println!(
@@ -35,7 +56,7 @@ pub fn print_scan_result(result: &ScanResult) {
 
     let risk_indicator = result.summary.risk_label();
 
-    println!("╭─────────────────────────────────────────────────────────────────────╮");
+    println!("{}", bar('╭', '─', '╮'));
     println!(
         "{}",
         row(&format!(
@@ -43,7 +64,7 @@ pub fn print_scan_result(result: &ScanResult) {
             result.summary.risk_score
         ))
     );
-    println!("├─────────────────────────────────────────────────────────────────────┤");
+    println!("{}", bar('├', '─', '┤'));
     println!(
         "{}",
         row(&format!("Agents Found:    {}", result.summary.agents_found))
@@ -74,7 +95,7 @@ pub fn print_scan_result(result: &ScanResult) {
         "{}",
         row(&format!("Low:             {}", result.summary.low_count))
     );
-    println!("╰─────────────────────────────────────────────────────────────────────╯\n");
+    println!("{}\n", bar('╰', '─', '╯'));
 
     if !result.agents.is_empty() {
         println!("DISCOVERED AGENTS:");
@@ -134,5 +155,21 @@ fn print_finding(finding: &Finding) {
         println!("│     {fix}");
     }
 
-    println!("└───────────────────────────────────────────────────────────────────────\n");
+    println!("{}\n", bar('└', '─', '┘'));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{bar, row};
+
+    #[test]
+    fn report_borders_share_one_width() {
+        let top = bar('╔', '═', '╗');
+        let risk = bar('╭', '─', '╮');
+        let foot = bar('└', '─', '┘');
+        let line = row("RISK SCORE: 14/100 [LOW]");
+        assert_eq!(top.chars().count(), risk.chars().count());
+        assert_eq!(risk.chars().count(), foot.chars().count());
+        assert_eq!(foot.chars().count(), line.chars().count());
+    }
 }
