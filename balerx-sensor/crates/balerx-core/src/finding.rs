@@ -37,6 +37,21 @@ pub struct ScanSummary {
     pub info_count: usize,
 }
 
+impl ScanSummary {
+    #[must_use]
+    pub fn risk_label(&self) -> &'static str {
+        if self.critical_count > 0 || self.risk_score > 75 {
+            "CRITICAL"
+        } else if self.high_count >= 3 || self.risk_score > 50 {
+            "HIGH"
+        } else if self.high_count > 0 || self.medium_count > 0 || self.risk_score > 25 {
+            "MEDIUM"
+        } else {
+            "LOW"
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Finding {
     pub id: String,
@@ -51,6 +66,8 @@ pub struct Finding {
     pub evidence: serde_json::Value,
     pub suggested_fix: Option<String>,
     pub references: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub line: Option<u32>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -118,6 +135,15 @@ impl ScanResult {
             FindingSeverity::Low => self.summary.low_count += 1,
             FindingSeverity::Info => self.summary.info_count += 1,
         }
+        let duplicate = self.findings.iter().any(|existing| {
+            existing.rule_id == finding.rule_id
+                && existing.affected_resource == finding.affected_resource
+                && existing.title == finding.title
+                && existing.evidence == finding.evidence
+        });
+        if duplicate {
+            return;
+        }
         self.findings.push(finding);
         self.summary.findings_count = self.findings.len();
         self.recalculate_risk_score();
@@ -162,8 +188,18 @@ impl Finding {
             affected_resource: String::new(),
             evidence: serde_json::json!({}),
             suggested_fix: None,
-            references: Vec::new(),
+            references: vec![format!(
+                "https://github.com/wrjewski/balerx#{}",
+                rule_id.code()
+            )],
+            line: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_line(mut self, line: u32) -> Self {
+        self.line = Some(line);
+        self
     }
 
     #[must_use]

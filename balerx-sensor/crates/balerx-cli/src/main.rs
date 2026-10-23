@@ -2,20 +2,21 @@ use anyhow::{Context, Result};
 use balerx_core::{
     canary::{CanaryManager, CanaryType},
     config::ConfigIssue,
+    config::IssueType,
     discovery::{AgentDiscovery, ConfigScanner},
     finding::{Confidence, Finding, FindingSeverity, ScanResult},
     guard::{AgentType, HookInstaller},
-    lockfile::{DriftType, LockedAgent, Lockfile},
+    hook_input::{decide_payload, decide_unreadable},
+    lockfile::{DriftType, Lockfile},
     log::{ActivityEvent, ActivityLog},
     output::{terminal, write_html, write_json, write_sarif},
     poison::PoisonDetector,
-    policy::{HookEvent, HookEventType, Policy},
+    policy::Policy,
     process::ProcessCollector,
     rules::RuleId,
 };
 use clap::{Parser, Subcommand, ValueEnum};
-use std::collections::HashMap;
-use std::io::{self};
+use std::io::{self, BufRead, Read};
 use std::path::PathBuf;
 use tracing::info;
 
@@ -32,6 +33,17 @@ struct Cli {
 enum Commands {
     /// Scan the system for AI agents and security issues
     Scan {
+        /// Project directory or a single config file to scan
+        path: Option<PathBuf>,
+
+        /// Write the report to stdout as json, sarif, or text
+        #[arg(long, value_enum)]
+        format: Option<OutputFormat>,
+
+        /// Exit 1 when a finding is at or above this severity
+        #[arg(long, value_enum, value_name = "SEVERITY")]
+        fail_on: Option<FailOn>,
+
         /// Output JSON to file
         #[arg(long, value_name = "FILE")]
         json: Option<PathBuf>,
@@ -156,6 +168,9 @@ enum GuardCommands {
         #[arg(value_enum)]
         agent: CliAgentType,
     },
+
+    /// Show whether Guard hooks are installed
+    Status,
 }
 
 #[derive(Subcommand)]
@@ -212,6 +227,22 @@ enum CliAgentType {
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
+enum OutputFormat {
+    Json,
+    Sarif,
+    Text,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum FailOn {
+    Critical,
+    High,
+    Medium,
+    Low,
+    Info,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
 enum CliCanaryType {
     Aws,
     Env,
@@ -220,25 +251,37 @@ enum CliCanaryType {
 }
 
 fn main() -> Result<()> {
+    let quiet = std::env::args().any(|arg| arg == "-q" || arg == "--quiet");
+    let filter = if quiet {
+        tracing_subscriber::EnvFilter::new("off")
+    } else {
+        tracing_subscriber::EnvFilter::try_from_default_env()
+            .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"))
+    };
     tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info")),
-        )
+        .with_env_filter(filter)
         .with_target(false)
         .with_level(true)
+        .with_writer(std::io::stderr)
+        .with_ansi(
+            std::env::var_os("NO_COLOR").is_none()
+                && std::io::IsTerminal::is_terminal(&std::io::stderr()),
+        )
         .init();
 
     let cli = Cli::parse();
 
     match cli.command {
         Commands::Scan {
+            path,
+            format,
+            fail_on,
             json,
             sarif,
             html,
             quiet,
         } => {
-            run_scan(json, sarif, html, quiet)?;
+            run_scan(path.as_deref(), format, fail_on, json, sarif, html, quiet)?;
         }
         Commands::Lock { output } => {
             run_lock(&output)?;
@@ -290,6 +333,9 @@ fn main() -> Result<()> {
 // Main scan orchestration: length is acceptable for sequential workflow
 #[allow(clippy::too_many_lines)]
 fn run_scan(
+    scan_path: Option<&std::path::Path>,
+    format: Option<OutputFormat>,
+    fail_on: Option<FailOn>,
     json_path: Option<PathBuf>,
     sarif_path: Option<PathBuf>,
     html_path: Option<PathBuf>,
@@ -300,7 +346,11 @@ fn run_scan(
     let mut result = ScanResult::new();
 
     let discovery = AgentDiscovery::new();
-    let agents = discovery.discover_all();
+    let agents = if scan_path.as_ref().is_some_and(|path| path.is_file()) {
+        Vec::new()
+    } else {
+        discovery.discover_all()
+    };
 
     for agent in agents {
         result.add_agent(agent);
@@ -308,7 +358,7 @@ fn run_scan(
 
     let config_scanner = ConfigScanner::new()?;
 
-    let agent_configs: Vec<_> = result
+    let mut agent_configs: Vec<_> = result
         .agents
         .iter()
         .flat_map(|agent| {
@@ -319,14 +369,35 @@ fn run_scan(
         })
         .collect();
 
+    if let Some(path) = &scan_path {
+        if path.is_file() {
+            agent_configs.push(("path".to_string(), path.to_path_buf()));
+        } else if path.is_dir() {
+            for relative in [
+                ".mcp.json",
+                ".cursor/mcp.json",
+                ".vscode/mcp.json",
+                ".claude/settings.json",
+                ".claude.json",
+            ] {
+                let candidate = path.join(relative);
+                if candidate.is_file() {
+                    agent_configs.push((relative.to_string(), candidate));
+                }
+            }
+        } else {
+            anyhow::bail!("Scan path not found: {}", path.display());
+        }
+    }
+
     for (agent_name, config_path) in agent_configs {
         info!("Scanning config: {:?}", config_path);
 
         match config_scanner.scan_config(&config_path) {
             Ok(scan_result) => {
                 for secret in scan_result.secrets_found {
-                    let finding = Finding::new(
-                        RuleId::SecretInConfig,
+                    let mut finding = Finding::new(
+                        secret_rule(&secret.location),
                         match secret.severity {
                             balerx_core::secret::SecretSeverity::Critical => FindingSeverity::Critical,
                             balerx_core::secret::SecretSeverity::High => FindingSeverity::High,
@@ -342,6 +413,9 @@ fn run_scan(
                         "location": secret.location
                     }))
                     .with_fix("Move this secret to a secure credential store (OS keychain, environment variable, or vault)");
+                    if let Some(line) = secret.line {
+                        finding = finding.with_line(line);
+                    }
 
                     result.add_finding(finding);
                 }
@@ -349,7 +423,7 @@ fn run_scan(
                 for issue in scan_result.issues {
                     let (severity, rule_id, fix) = map_config_issue(&issue);
 
-                    let finding = Finding::new(
+                    let mut finding = Finding::new(
                         rule_id,
                         severity,
                         issue.description.clone(),
@@ -363,6 +437,9 @@ fn run_scan(
                     }))
                     .with_fix(fix)
                     .with_confidence(Confidence::High);
+                    if let Some(line) = issue.line {
+                        finding = finding.with_line(line);
+                    }
 
                     result.add_finding(finding);
                 }
@@ -387,14 +464,70 @@ fn run_scan(
             "Found running agent process: {} (PID: {})",
             process.name, process.pid
         );
+        for agent in &mut result.agents {
+            let names = [
+                agent.name.to_ascii_lowercase(),
+                agent.definition_id.to_ascii_lowercase(),
+            ];
+            if names
+                .iter()
+                .any(|name| process.name.to_ascii_lowercase().contains(name.as_str()))
+                || process
+                    .name
+                    .to_ascii_lowercase()
+                    .contains(&agent.definition_id.to_ascii_lowercase())
+            {
+                agent.process_id = Some(process.pid);
+                agent.status = balerx_core::AgentStatus::Running;
+            }
+        }
+    }
+
+    for agent in result.agents.clone() {
+        if matches!(agent.definition_id.as_str(), "claude-code" | "cursor")
+            && !agent.config_paths.is_empty()
+            && !agent.config_paths.iter().any(|path| {
+                std::fs::read_to_string(path).is_ok_and(|text| {
+                    text.to_ascii_lowercase().contains("balerx")
+                        && text.to_ascii_lowercase().contains("hook")
+                })
+            })
+        {
+            result.add_finding(
+                Finding::new(
+                    RuleId::HookGapNoGuard,
+                    FindingSeverity::Medium,
+                    format!("Guard hooks are not installed for {}", agent.name),
+                    "This agent has a config file and no Balerx hook entry".to_string(),
+                )
+                .with_agent(&agent.name)
+                .with_resource(
+                    agent
+                        .config_paths
+                        .first()
+                        .map(|path| path.display().to_string())
+                        .unwrap_or_default(),
+                )
+                .with_fix("Run balerx guard install for this agent"),
+            );
+        }
     }
 
     let poison_detector = PoisonDetector::new()?;
-    if let Ok(current_dir) = std::env::current_dir() {
+    let poison_root = scan_path
+        .filter(|path| path.is_dir())
+        .map(std::path::Path::to_path_buf)
+        .or_else(|| std::env::current_dir().ok());
+    if let Some(current_dir) = poison_root {
         if let Ok(poison_matches) = poison_detector.scan_directory(&current_dir) {
             for poison in poison_matches {
+                let rule = if poison.pattern_name == "Data Exfiltration" {
+                    RuleId::ToolPoisonExfiltration
+                } else {
+                    RuleId::ToolPoisonHiddenInstructions
+                };
                 let finding = Finding::new(
-                    RuleId::ToolPoisonHiddenInstructions,
+                    rule,
                     match poison.severity {
                         balerx_core::poison::PoisonSeverity::Critical => FindingSeverity::Critical,
                         balerx_core::poison::PoisonSeverity::High => FindingSeverity::High,
@@ -439,29 +572,88 @@ fn run_scan(
         }
     }
 
-    if !quiet {
-        terminal::print_scan_result(&result);
+    match format {
+        Some(OutputFormat::Json) => {
+            println!("{}", serde_json::to_string_pretty(&result)?);
+        }
+        Some(OutputFormat::Sarif) => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&balerx_core::output::sarif::to_sarif(&result))?
+            );
+        }
+        Some(OutputFormat::Text) => terminal::print_scan_result(&result),
+        None if !quiet => terminal::print_scan_result(&result),
+        None => {}
     }
 
     info!("Scan complete");
 
-    if result.summary.critical_count > 0 {
-        std::process::exit(2);
-    } else if result.summary.high_count > 0 {
-        std::process::exit(1);
+    let code = exit_code(&result, fail_on);
+    if code != 0 {
+        std::process::exit(code);
     }
 
     Ok(())
 }
 
-fn map_config_issue(issue: &ConfigIssue) -> (FindingSeverity, RuleId, &'static str) {
-    use balerx_core::config::IssueType;
+fn exit_code(result: &ScanResult, fail_on: Option<FailOn>) -> i32 {
+    if let Some(level) = fail_on {
+        let hit = result
+            .findings
+            .iter()
+            .any(|finding| severity_rank(finding.severity) >= fail_rank(level));
+        return i32::from(hit);
+    }
+    if result.summary.critical_count > 0 {
+        return 2;
+    }
+    i32::from(result.summary.high_count > 0)
+}
 
+fn severity_rank(severity: FindingSeverity) -> u8 {
+    match severity {
+        FindingSeverity::Critical => 5,
+        FindingSeverity::High => 4,
+        FindingSeverity::Medium => 3,
+        FindingSeverity::Low => 2,
+        FindingSeverity::Info => 1,
+    }
+}
+
+fn fail_rank(level: FailOn) -> u8 {
+    match level {
+        FailOn::Critical => 5,
+        FailOn::High => 4,
+        FailOn::Medium => 3,
+        FailOn::Low => 2,
+        FailOn::Info => 1,
+    }
+}
+
+fn secret_rule(location: &str) -> RuleId {
+    let parts: Vec<&str> = location.split(['.', '[', ']']).collect();
+    if parts
+        .iter()
+        .any(|part| part.eq_ignore_ascii_case("env") || part.eq_ignore_ascii_case("environment"))
+    {
+        RuleId::SecretInEnv
+    } else if parts
+        .iter()
+        .any(|part| part.eq_ignore_ascii_case("args") || part.eq_ignore_ascii_case("arguments"))
+    {
+        RuleId::SecretInArgs
+    } else {
+        RuleId::SecretInConfig
+    }
+}
+
+fn map_config_issue(issue: &ConfigIssue) -> (FindingSeverity, RuleId, &'static str) {
     match issue.issue_type {
         IssueType::UnpinnedPackage => (
             FindingSeverity::Medium,
             RuleId::McpSupplyUnpinned,
-            "Pin the package to a specific version, e.g., npx -y package@1.2.3",
+            "Pin the package to a specific version, for example package@1.2.3",
         ),
         IssueType::LatestTag => (
             FindingSeverity::Medium,
@@ -483,26 +675,42 @@ fn map_config_issue(issue: &ConfigIssue) -> (FindingSeverity, RuleId, &'static s
             RuleId::McpRemoteNoAuth,
             "Add authentication credentials for remote MCP server connections",
         ),
+        IssueType::BrokenConfig => (
+            FindingSeverity::High,
+            RuleId::ConfigInvalid,
+            "Fix the JSON or TOML syntax so the scanner can read the file",
+        ),
+        IssueType::DockerPrivileged | IssueType::RootMount => (
+            FindingSeverity::High,
+            RuleId::McpPermDocker,
+            "Drop --privileged and host root mounts from the container command",
+        ),
+        IssueType::AutoApprove => (
+            FindingSeverity::High,
+            RuleId::AgentAutonomyAutoApprove,
+            "Turn off approval_policy never or an equivalent auto-approve setting",
+        ),
+        IssueType::DangerousPermissions => (
+            FindingSeverity::High,
+            RuleId::AgentAutonomyDangerousPermissions,
+            "Remove bypassPermissions, Bash(*), or danger-full-access",
+        ),
+        IssueType::ShellExec => (
+            FindingSeverity::High,
+            RuleId::McpPermShellExec,
+            "Replace the shell command with the specific tool binary",
+        ),
+        IssueType::DatabaseAccess => (
+            FindingSeverity::Medium,
+            RuleId::McpPermDatabase,
+            "Use a read-only role and a database that is not production",
+        ),
     }
 }
 
 fn discovered_lockfile() -> Lockfile {
-    let mut lockfile = Lockfile::new();
     let discovery = AgentDiscovery::new();
-    for agent in discovery.discover_all() {
-        lockfile.add_agent(LockedAgent {
-            name: agent.name.clone(),
-            definition_id: agent.definition_id.clone(),
-            version: agent.version.clone(),
-            config_paths: agent
-                .config_paths
-                .iter()
-                .map(|path| path.display().to_string())
-                .collect(),
-            config_hash: None,
-        });
-    }
-    lockfile
+    Lockfile::capture(&discovery.discover_all())
 }
 
 fn run_lock(output: &PathBuf) -> Result<()> {
@@ -570,8 +778,11 @@ fn run_guard(command: &GuardCommands) -> Result<()> {
             };
 
             println!("Installing Guard hooks for {agent_type:?}...");
-            installer.install(agent_type)?;
+            let written = installer.install(agent_type)?;
             println!("✓ Guard hooks installed successfully");
+            for path in &written {
+                println!("  • {}", path.display());
+            }
             println!("\nThe hooks will intercept:");
             match agent_type {
                 AgentType::ClaudeCode => {
@@ -581,6 +792,7 @@ fn run_guard(command: &GuardCommands) -> Result<()> {
                 AgentType::Cursor => {
                     println!("  • beforeShellExecution - before shell commands");
                     println!("  • beforeMCPExecution - before MCP tool calls");
+                    println!("  • beforeReadFile - before file reads");
                 }
             }
             println!("\nPolicy file: ~/.balerx/policy.yaml");
@@ -599,6 +811,53 @@ fn run_guard(command: &GuardCommands) -> Result<()> {
             installer.uninstall(agent_type)?;
             println!("✓ Guard hooks uninstalled successfully");
         }
+        GuardCommands::Status => {
+            let status = installer.status();
+            println!(
+                "Claude Code user hooks: {} ({})",
+                if status.claude_user {
+                    "installed"
+                } else {
+                    "not installed"
+                },
+                status.claude_settings.display()
+            );
+            println!(
+                "Claude Code project hooks: {}",
+                if status.claude_project {
+                    "installed"
+                } else {
+                    "not installed"
+                }
+            );
+            println!(
+                "Cursor hooks: {} ({})",
+                if status.cursor_user {
+                    "installed"
+                } else {
+                    "not installed"
+                },
+                status.cursor_hooks.display()
+            );
+            let policy_path = policy_path_from_env();
+            let policy = if policy_path.exists() {
+                Policy::from_file(&policy_path).unwrap_or_else(|_| Policy::default_policy())
+            } else {
+                Policy::default_policy()
+            };
+            println!("Policy: {}", policy_path.display());
+            println!(
+                "  fail_open={} timeout_ms={}",
+                policy.global.fail_open, policy.global.timeout_ms
+            );
+            println!(
+                "Activity log: {}",
+                ActivityLog::default_log().path().display()
+            );
+            if !status.claude_user && !status.claude_project && !status.cursor_user {
+                std::process::exit(1);
+            }
+        }
     }
 
     Ok(())
@@ -606,125 +865,96 @@ fn run_guard(command: &GuardCommands) -> Result<()> {
 
 fn run_hook(event_type: &str) -> Result<()> {
     let start = std::time::Instant::now();
+    let mut raw = String::new();
+    io::stdin().read_to_string(&mut raw)?;
 
-    let stdin = io::stdin();
-    let input: serde_json::Value = serde_json::from_reader(stdin.lock())?;
-
-    let policy_path = default_policy_path();
-
+    let policy_path = policy_path_from_env();
     let policy = if policy_path.exists() {
-        Policy::from_file(&policy_path)?
+        Policy::from_file(&policy_path).unwrap_or_else(|_| Policy::default_policy())
     } else {
         Policy::default_policy()
     };
 
-    let event = parse_hook_event(event_type, &input);
+    let elapsed = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let parsed = serde_json::from_str::<serde_json::Value>(&raw);
+    let input = parsed.unwrap_or(serde_json::Value::Null);
+    let mut outcome = match serde_json::from_str::<serde_json::Value>(&raw) {
+        Ok(value) => decide_payload(event_type, &value, &policy, elapsed),
+        Err(_) => decide_unreadable(event_type, &policy),
+    };
 
     let canary_manager = CanaryManager::new()?;
-    if let Some(resource) = &event.resource {
+    let canary_path = outcome
+        .event
+        .resource
+        .clone()
+        .or_else(|| outcome.event.command.clone());
+    if let Some(resource) = canary_path.as_deref() {
         if let Some(canary) = canary_manager.is_canary(resource) {
-            let activity_log = ActivityLog::default_log();
-            let log_event = ActivityEvent::new("canary_access", &event.agent, "denied")
-                .with_resource(resource)
-                .with_decision("CANARY TRIGGERED")
-                .with_metadata(guard_activity_metadata(
-                    &input,
-                    &serde_json::json!({
-                        "canary_id": canary.id,
-                        "canary_type": canary.canary_type,
-                        "severity": "CRITICAL"
-                    }),
-                ));
-            let _ = activity_log.append(log_event);
-
-            let response = serde_json::json!({
-                "allow": false,
-                "reason": "Access to canary credential detected - possible security breach"
-            });
-            println!("{}", serde_json::to_string(&response)?);
-            return Ok(());
+            let reason = "Access to a planted canary credential".to_string();
+            outcome.decision.action = balerx_core::policy::PolicyAction::Deny;
+            outcome.decision.reason.clone_from(&reason);
+            outcome.body = match outcome.kind {
+                balerx_core::hook_input::HookAgentKind::ClaudeCode => serde_json::json!({
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "deny",
+                        "permissionDecisionReason": reason
+                    }
+                })
+                .to_string(),
+                balerx_core::hook_input::HookAgentKind::Cursor => serde_json::json!({
+                    "permission": "deny",
+                    "user_message": reason,
+                    "agent_message": reason
+                })
+                .to_string(),
+            };
+            outcome.exit_code = match outcome.kind {
+                balerx_core::hook_input::HookAgentKind::ClaudeCode => 2,
+                balerx_core::hook_input::HookAgentKind::Cursor => 0,
+            };
+            let _ = ActivityLog::default_log().append(
+                ActivityEvent::new("canary_access", &outcome.event.agent, "denied")
+                    .with_resource(resource)
+                    .with_decision("deny")
+                    .with_metadata(guard_activity_metadata(
+                        &input,
+                        &serde_json::json!({
+                            "canary_id": canary.id,
+                            "canary_type": format!("{:?}", canary.canary_type)
+                        }),
+                    )),
+            );
         }
     }
 
-    let decision = policy.evaluate(&event);
+    let resource = outcome
+        .event
+        .resource
+        .clone()
+        .or(outcome.event.command.clone())
+        .unwrap_or_default();
+    let _ = ActivityLog::default_log().append(
+        ActivityEvent::new(event_type, &outcome.event.agent, "evaluated")
+            .with_resource(resource)
+            .with_decision(format!("{:?}", outcome.decision.action))
+            .with_metadata(guard_activity_metadata(
+                &input,
+                &serde_json::json!({
+                    "matched_rule": outcome.decision.matched_rule,
+                    "elapsed_ms": elapsed
+                }),
+            )),
+    );
 
-    let activity_log = ActivityLog::default_log();
-    let log_event = ActivityEvent::new(event_type, &event.agent, "evaluated")
-        .with_resource(event.resource.clone().unwrap_or_default())
-        .with_decision(format!("{:?}", decision.action))
-        .with_metadata(guard_activity_metadata(
-            &input,
-            &serde_json::json!({
-                "matched_rule": decision.matched_rule,
-                "elapsed_ms": start.elapsed().as_millis()
-            }),
-        ));
-
-    let _ = activity_log.append(log_event);
-
-    let response = match decision.action {
-        balerx_core::policy::PolicyAction::Allow => serde_json::json!({
-            "allow": true,
-            "reason": decision.reason
-        }),
-        balerx_core::policy::PolicyAction::Deny => serde_json::json!({
-            "allow": false,
-            "reason": decision.reason
-        }),
-        balerx_core::policy::PolicyAction::Ask => serde_json::json!({
-            "allow": false,
-            "reason": format!("User approval required: {}", decision.reason)
-        }),
-    };
-
-    println!("{}", serde_json::to_string(&response)?);
-
-    let elapsed = start.elapsed();
-    if elapsed.as_millis() > 50 {
-        tracing::warn!(
-            "Hook evaluation took {}ms (target: <50ms)",
-            elapsed.as_millis()
-        );
+    println!("{}", outcome.body);
+    if outcome.exit_code != 0 {
+        eprintln!("{}", outcome.decision.reason);
+        std::process::exit(outcome.exit_code);
     }
 
     Ok(())
-}
-
-fn parse_hook_event(event_type: &str, input: &serde_json::Value) -> HookEvent {
-    let hook_event_type = match event_type {
-        "before_shell_execution" => HookEventType::ShellExecution,
-        "before_mcp_execution" => HookEventType::McpExecution,
-        _ => HookEventType::ToolCall,
-    };
-
-    let metadata: HashMap<String, serde_json::Value> =
-        input.as_object().map_or_else(HashMap::default, |obj| {
-            obj.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
-        });
-
-    HookEvent {
-        event_type: hook_event_type,
-        agent: input
-            .get("agent")
-            .and_then(|v| v.as_str())
-            .unwrap_or("unknown")
-            .to_string(),
-        resource: input
-            .get("resource")
-            .or_else(|| input.get("path"))
-            .and_then(|v| v.as_str())
-            .map(String::from),
-        command: input
-            .get("command")
-            .and_then(|v| v.as_str())
-            .map(String::from),
-        mcp_server: input
-            .get("server")
-            .and_then(|v| v.as_str())
-            .map(String::from),
-        tool_name: input.get("tool").and_then(|v| v.as_str()).map(String::from),
-        metadata,
-    }
 }
 
 fn run_log(command: LogCommands) -> Result<()> {
@@ -813,14 +1043,18 @@ fn run_canary(command: CanaryCommands) -> Result<()> {
             }
         }
         CanaryCommands::Check { path } => {
+            if !path.exists() {
+                eprintln!("Cannot check {}: file not found", path.display());
+                std::process::exit(1);
+            }
             if let Some(canary) = manager.is_canary(&path) {
-                println!("⚠ This is a CANARY credential!");
+                println!("This path is a planted canary");
                 println!("ID: {}", canary.id);
                 println!("Type: {}", canary.canary_type.name());
                 println!("Created: {}", canary.created_at);
-            } else {
-                println!("✓ Not a canary - this is a regular file");
+                std::process::exit(2);
             }
+            println!("Not a planted canary");
         }
     }
 
@@ -834,25 +1068,51 @@ fn default_policy_path() -> PathBuf {
         .join("policy.yaml")
 }
 
+fn policy_path_from_env() -> PathBuf {
+    std::env::var_os("BALERX_POLICY").map_or_else(default_policy_path, PathBuf::from)
+}
+
 fn require_remote_credentials(
     api_url: Option<String>,
     api_key: Option<String>,
 ) -> Result<(String, String)> {
     let api_url = api_url
         .or_else(|| std::env::var("BALERX_API_URL").ok())
+        .filter(|value| !value.is_empty())
         .ok_or_else(|| {
             anyhow::anyhow!(
                 "Pass --api-url or set BALERX_API_URL. The CLI stays offline until you opt in."
             )
         })?;
-    let api_key = api_key
-        .or_else(|| std::env::var("BALERX_API_KEY").ok())
+    let api_key = resolve_api_key(api_key)?;
+    Ok((api_url, api_key))
+}
+
+fn resolve_api_key(api_key: Option<String>) -> Result<String> {
+    if let Some(value) = api_key {
+        if value == "-" {
+            let mut line = String::new();
+            let mut stdin = io::stdin().lock();
+            stdin.read_line(&mut line)?;
+            let key = line.trim().to_string();
+            if key.is_empty() {
+                anyhow::bail!("No API key was provided on stdin");
+            }
+            return Ok(key);
+        }
+        eprintln!(
+            "warning: --api-key is visible in the process list and shell history. Prefer BALERX_API_KEY, or pass --api-key - to read the key from stdin."
+        );
+        return Ok(value);
+    }
+    std::env::var("BALERX_API_KEY")
+        .ok()
+        .filter(|value| !value.is_empty())
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "Pass --api-key or set BALERX_API_KEY. The CLI stays offline until you opt in."
+                "Set BALERX_API_KEY, or pass --api-key - to read the key from stdin. The CLI stays offline until you opt in."
             )
-        })?;
-    Ok((api_url, api_key))
+        })
 }
 
 fn guard_hooks_installed(home: &std::path::Path) -> bool {
@@ -922,7 +1182,7 @@ fn run_policy_pull(
     let mut response = ureq::get(&format!("{base}/v1/ingest/policy"))
         .header("Authorization", format!("Bearer {api_key}"))
         .call()
-        .map_err(|error| anyhow::anyhow!("Policy pull failed: {error}"))?;
+        .map_err(|error| http_failure("Policy pull", &error))?;
     let yaml = response
         .body_mut()
         .read_to_string()
@@ -1047,7 +1307,9 @@ fn run_upload(
     let base = api_url.trim_end_matches('/');
     if scan.is_some() || lockfile.is_some() {
         let mut payload = if let Some(path) = &scan {
-            serde_json::from_str(&std::fs::read_to_string(path)?)?
+            let text = read_user_file(path)?;
+            serde_json::from_str(&text)
+                .with_context(|| format!("Could not parse JSON in {}", path.display()))?
         } else {
             serde_json::json!({
                 "scan_id": format!("drift-{}", chrono_millis()),
@@ -1067,7 +1329,7 @@ fn run_upload(
     }
 
     if let Some(path) = activity_log {
-        let events = metadata_activity_events(&std::fs::read_to_string(&path)?)?;
+        let events = metadata_activity_events(&read_user_file(&path)?)?;
         post_json(
             &format!("{base}/v1/ingest/activity"),
             &api_key,
@@ -1098,11 +1360,27 @@ fn metadata_activity_events(contents: &str) -> Result<Vec<serde_json::Value>> {
     Ok(events)
 }
 
+fn read_user_file(path: &std::path::Path) -> Result<String> {
+    std::fs::read_to_string(path)
+        .with_context(|| format!("Could not read file: {}", path.display()))
+}
+
+fn http_failure(action: &str, error: &ureq::Error) -> anyhow::Error {
+    let text = error.to_string();
+    if text.contains("401") {
+        anyhow::anyhow!(
+            "{action} failed: the server rejected the API key (HTTP 401). Check BALERX_API_KEY."
+        )
+    } else {
+        anyhow::anyhow!("{action} failed: {text}")
+    }
+}
+
 fn post_json(url: &str, api_key: &str, payload: &serde_json::Value) -> Result<()> {
     ureq::post(url)
         .header("Authorization", format!("Bearer {api_key}"))
         .send_json(payload)
-        .map_err(|error| anyhow::anyhow!("Upload failed: {error}"))?;
+        .map_err(|error| http_failure("Upload", &error))?;
     Ok(())
 }
 

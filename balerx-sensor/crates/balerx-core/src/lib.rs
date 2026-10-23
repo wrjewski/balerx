@@ -4,6 +4,7 @@ pub mod config;
 pub mod discovery;
 pub mod finding;
 pub mod guard;
+pub mod hook_input;
 pub mod lockfile;
 pub mod log;
 pub mod output;
@@ -41,6 +42,21 @@ mod tests {
 
         let score = RiskScore::calculate(&findings);
         assert_eq!(score, 29); // 25 (critical) + 4 (medium)
+    }
+
+    #[test]
+    fn three_high_findings_are_not_labeled_medium() {
+        let mut result = ScanResult::new();
+        for index in 0..3 {
+            result.add_finding(Finding::new(
+                RuleId::McpPermBroadFilesystem,
+                FindingSeverity::High,
+                format!("High {index}"),
+                "desc",
+            ));
+        }
+        assert!(result.summary.high_count >= 3);
+        assert_eq!(result.summary.risk_label(), "HIGH");
     }
 
     #[test]

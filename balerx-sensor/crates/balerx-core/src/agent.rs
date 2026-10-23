@@ -174,6 +174,11 @@ impl AgentDefinition {
                     platforms: vec![Platform::Windows],
                     required: false,
                 },
+                ConfigPath {
+                    path: "~/.config/Claude/claude_desktop_config.json".to_string(),
+                    platforms: vec![Platform::Linux],
+                    required: false,
+                },
             ],
             binary_patterns: vec![],
             process_names: vec!["Claude".to_string()],
@@ -188,8 +193,23 @@ impl AgentDefinition {
             description: "Visual Studio Code with Copilot extension".to_string(),
             config_paths: vec![
                 ConfigPath {
-                    path: "~/.vscode/mcp.json".to_string(),
+                    path: ".vscode/mcp.json".to_string(),
                     platforms: vec![Platform::Windows, Platform::Macos, Platform::Linux],
+                    required: false,
+                },
+                ConfigPath {
+                    path: "~/.config/Code/User/mcp.json".to_string(),
+                    platforms: vec![Platform::Linux],
+                    required: false,
+                },
+                ConfigPath {
+                    path: "~/Library/Application Support/Code/User/mcp.json".to_string(),
+                    platforms: vec![Platform::Macos],
+                    required: false,
+                },
+                ConfigPath {
+                    path: "%APPDATA%/Code/User/mcp.json".to_string(),
+                    platforms: vec![Platform::Windows],
                     required: false,
                 },
                 ConfigPath {
@@ -220,7 +240,7 @@ impl AgentDefinition {
             vendor: "Codeium".to_string(),
             description: "AI-powered development environment".to_string(),
             config_paths: vec![ConfigPath {
-                path: "~/.windsurf/mcp_config.json".to_string(),
+                path: "~/.codeium/windsurf/mcp_config.json".to_string(),
                 platforms: vec![Platform::Windows, Platform::Macos, Platform::Linux],
                 required: false,
             }],
@@ -235,11 +255,23 @@ impl AgentDefinition {
             name: "Cline (Roo Code)".to_string(),
             vendor: "Cline / Roo Code".to_string(),
             description: "VS Code extension for AI coding".to_string(),
-            config_paths: vec![ConfigPath {
-                path: "~/.vscode/extensions/cline_mcp_settings.json".to_string(),
-                platforms: vec![Platform::Windows, Platform::Macos, Platform::Linux],
-                required: false,
-            }],
+            config_paths: vec![
+                ConfigPath {
+                    path: "~/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json".to_string(),
+                    platforms: vec![Platform::Linux],
+                    required: false,
+                },
+                ConfigPath {
+                    path: "~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json".to_string(),
+                    platforms: vec![Platform::Macos],
+                    required: false,
+                },
+                ConfigPath {
+                    path: "%APPDATA%/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json".to_string(),
+                    platforms: vec![Platform::Windows],
+                    required: false,
+                },
+            ],
             binary_patterns: vec![],
             process_names: vec![],
         }
@@ -425,5 +457,25 @@ impl AgentDefinition {
         };
 
         Some(PathBuf::from(path_str))
+    }
+
+    #[must_use]
+    pub fn expand_config_paths(&self, path_str: &str) -> Vec<PathBuf> {
+        let Some(expanded) = self.expand_path(path_str) else {
+            return Vec::new();
+        };
+        let text = expanded.to_string_lossy();
+        if text.contains('*') {
+            return glob::glob(&text)
+                .ok()
+                .map(|entries| {
+                    entries
+                        .filter_map(Result::ok)
+                        .filter(|path| path.is_file())
+                        .collect()
+                })
+                .unwrap_or_default();
+        }
+        vec![expanded]
     }
 }

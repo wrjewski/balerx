@@ -2,206 +2,179 @@
 
 ## Overview
 
-Balerx Guard integrates with AI coding agents through their native hook systems to provide real-time policy enforcement. This document describes the hook formats and integration details.
+Balerx Guard integrates with AI coding agents through their native hook systems. `balerx guard install` merges entries into the agent's settings file. It does not replace other hooks. `balerx guard uninstall` removes only commands that contain both `balerx` and `hook`. It does not restore a backup.
+
+Check the result with `balerx guard status`. The command prints the Claude and Cursor files, whether a Balerx hook is present, the policy `fail_open` and `timeout_ms` values, and the activity log path. It exits 1 when no Balerx hook is installed.
 
 ## Claude Code Hooks
 
-**Reference:** https://code.claude.com/docs/en/hooks
+**Reference:** https://docs.claude.com/en/docs/claude-code/hooks
 
-Claude Code supports hook configuration in `~/.claude.json`:
+`balerx guard install claude-code` merges into `~/.claude/settings.json`. If the current directory already has `.claude/settings.json`, the same entries are merged there. The file is not created only to hold a project hook.
 
 ```json
 {
   "hooks": {
-    "PreToolUse": {
-      "command": "/path/to/balerx",
-      "args": ["hook", "--event-type", "pre_tool_use"]
-    },
-    "PostToolUse": {
-      "command": "/path/to/balerx",
-      "args": ["hook", "--event-type", "post_tool_use"]
-    }
+    "PreToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/balerx hook --event-type pre_tool_use"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/balerx hook --event-type post_tool_use"
+          }
+        ]
+      }
+    ]
   }
 }
 ```
 
-### Input Format (stdin JSON)
+`command` is one string. Other matchers in the same array are left in place.
+
+### Input
+
+Claude Code sends the tool call on stdin. Guard reads `tool_name` and `tool_input.command`, `tool_input.file_path`, and other path fields.
 
 ```json
 {
-  "agent": "claude-code",
-  "tool": "read_file",
-  "args": {
-    "path": "/path/to/file"
-  },
-  "server": "filesystem"
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "cat .env"
+  }
 }
 ```
 
-### Output Format (stdout JSON)
+### Output
 
-**PreToolUse** must return:
+PreToolUse writes `hookSpecificOutput` and uses the exit code Claude Code expects:
+
 ```json
 {
-  "allow": true,
-  "reason": "Optional explanation"
+  "hookSpecificOutput": {
+    "hookEventName": "PreToolUse",
+    "permissionDecision": "deny",
+    "permissionDecisionReason": "Access to .env files denied"
+  }
 }
 ```
 
-**PostToolUse** is logging-only (no decision required).
-
-### Performance Requirements
-
-- Target: <50ms p95
-- Claude Code may timeout hooks that take too long
-- Hooks that crash or hang will fail open (by default)
+`permissionDecision` is `allow`, `deny`, or `ask`. Deny exits 2. Allow and ask exit 0. PostToolUse records the call and exits 0. It does not block a tool that already ran.
 
 ## Cursor Hooks
 
 **Reference:** https://cursor.com/docs/hooks
 
-Cursor supports hook configuration in `~/.cursor/hooks.json`:
+`balerx guard install cursor` merges into `~/.cursor/hooks.json`. Existing hooks stay. `"version"` stays at 1 when it is missing, and an existing version is kept. Each event is an array under `hooks`.
 
 ```json
 {
-  "beforeShellExecution": {
-    "command": "/path/to/balerx",
-    "args": ["hook", "--event-type", "before_shell_execution"]
-  },
-  "beforeMCPExecution": {
-    "command": "/path/to/balerx",
-    "args": ["hook", "--event-type", "before_mcp_execution"]
+  "version": 1,
+  "hooks": {
+    "beforeShellExecution": [
+      {
+        "command": "/path/to/balerx hook --event-type before_shell_execution"
+      }
+    ],
+    "beforeMCPExecution": [
+      {
+        "command": "/path/to/balerx hook --event-type before_mcp_execution"
+      }
+    ],
+    "beforeReadFile": [
+      {
+        "command": "/path/to/balerx hook --event-type before_read_file"
+      }
+    ]
   }
 }
 ```
 
-### Input Formats
+### Input
 
-**beforeShellExecution:**
+Guard reads `command`, `cwd`, `file_path`, `mcp_server_name`, and `tool_input`. `tool_input` may be an object or a JSON string.
+
 ```json
 {
-  "agent": "cursor",
-  "command": "git push --force",
-  "cwd": "/path/to/repo"
+  "command": "cat ~/.ssh/id_ed25519",
+  "cwd": "/tmp"
 }
 ```
 
-**beforeMCPExecution:**
+### Output
+
+Cursor always receives exit code 0 and a permission object:
+
 ```json
 {
-  "agent": "cursor",
-  "server": "filesystem",
-  "tool": "read_file",
-  "args": {
-    "path": "/path/to/file"
-  }
+  "permission": "deny",
+  "user_message": "Access to SSH private keys denied",
+  "agent_message": "Access to SSH private keys denied"
 }
 ```
 
-### Output Format
+`permission` is `allow`, `deny`, or `ask`.
 
-Both hooks must return:
-```json
-{
-  "allow": true,
-  "reason": "Optional explanation"
-}
-```
+## Policy evaluation
 
-## Policy Evaluation
+`balerx hook`:
 
-The `balerx hook` handler:
+1. Reads one JSON event on stdin.
+2. Loads `~/.balerx/policy.yaml`, or the file in `BALERX_POLICY`. A missing file uses the built-in policy.
+3. Checks whether the resource is a planted canary. A canary is denied.
+4. Matches paths, including `.env*` files, `.ssh/id_*`, and `.pem`, plus shell tokens such as `cat .env`.
+5. Appends the decision to the activity log. The `agent` field is `claude-code` or `cursor`. The `resource` field is the path or command target, not the whole payload.
+6. Writes the agent's native decision on stdout.
 
-1. Receives hook input on stdin
-2. Loads policy from `~/.balerx/policy.yaml` (or uses default)
-3. Checks if the resource is a canary credential
-4. Evaluates policy rules against the event
-5. Logs the decision to activity log
-6. Returns allow/deny decision on stdout
+`global.timeout_ms` (default 50) is the hook's own budget. When evaluation takes longer, `global.fail_open` chooses the decision: true allows the action, false denies it. The same choice applies when stdin is not valid JSON. The activity log is `activity.jsonl` under the OS data directory (`~/.local/share/balerx/logs/` on Linux). `BALERX_DATA_DIR` overrides that directory.
 
-## Verified Behavior (from Official Documentation)
+## Host timeout behavior
 
-### Timeout Behavior
-
-**Claude Code** (as of v2.1.295+):
-- Default timeouts: 600s for `command` hooks, lowered to 30s for certain events, 10s for `MessageDisplay`
-- A timed-out `PreToolUse` hook does **not block** the tool call by default — the call continues through normal permission flow
-- To block on timeout, set `"onFailure": "block"` in hook configuration
-- Source: https://code.claude.com/docs/en/hooks#timeouts
-
-**Cursor** (as of v0.x):
-- `timeout` option sets execution timeout in seconds (platform default if not specified)
-- Crash, timeout, or non-zero exit (other than 2) = **fail open by default** (action proceeds)
-- Set `"failClosed": true` on the hook to block on crash/timeout
-- Invalid JSON or schema mismatch always blocks permission hooks
-- Source: https://cursor.com/docs/hooks#per-script-configuration-options
-
-### Crash/Error Handling
+The numbers below are the agent's own limits, separate from `timeout_ms`.
 
 **Claude Code:**
-- Hooks that can't start (missing script, wrong path) = non-blocking error by default
-- Set `"onFailure": "block"` to block when the hook fails
-- `PostToolUse` hooks can't undo actions (tool already executed)
-- Source: https://code.claude.com/docs/en/hooks#block-the-action-when-a-hook-fails
+
+- A timed-out `PreToolUse` hook does not block the tool call unless the hook config sets `"onFailure": "block"`.
+- Source: https://code.claude.com/docs/en/hooks
 
 **Cursor:**
-- Exit code `0` = success, use JSON output
-- Exit code `2` = block the action (equivalent to `permission: "deny"`)
-- Other non-zero exits = fail open unless `failClosed: true`
-- Source: https://cursor.com/docs/hooks#command-based-hooks
 
-### Argument Modification
+- A crash, timeout, or non-zero exit other than 2 fails open unless the hook sets `"failClosed": true`.
+- Source: https://cursor.com/docs/hooks
 
-**Claude Code:**
-- `PreToolUse` hooks can return `updatedInput` to rewrite a tool's arguments
-- When multiple hooks return `updatedInput`, the last to finish wins (non-deterministic order)
-- Source: https://code.claude.com/docs/en/hooks-guide#limitations
-
-**Cursor:**
-- Current documentation does not specify argument modification capability for `beforeShellExecution`/`beforeMCPExecution`
-- Hooks return permission decisions only (`allow`/`deny`/`ask`)
-- Balerx Guard does **not** attempt argument modification
-
-### Recommendations
-
-1. **Keep hooks fast** - Target <20ms actual, <50ms p95 (both systems have generous defaults but user experience suffers)
-2. **Use `failClosed`/`onFailure: "block"` for security** - Default fail-open is dangerous for policy enforcement
-3. **Log everything** - Even when policy allows, log for audit trail
-4. **Test crash scenarios** - Ensure your hook binary is on PATH and executable
-5. **Handle invalid JSON** - Both systems block on schema mismatch for permission hooks
+Guard does not rewrite tool arguments.
 
 ## Testing
 
-### Manual Hook Testing
-
 ```bash
-# Simulate a PreToolUse event
-echo '{"agent":"claude-code","tool":"read_file","args":{"path":"~/.ssh/id_rsa"},"server":"filesystem"}' \
+printf '%s' '{"tool_name":"Read","tool_input":{"file_path":"/home/user/.ssh/id_rsa"}}' \
   | balerx hook --event-type pre_tool_use
-
-# Expected output:
-# {"allow":false,"reason":"Access to SSH private keys denied"}
 ```
 
-### Integration Testing
+A default policy denies that read. Claude output contains `"permissionDecision":"deny"` and the process exits 2.
 
-1. Install hooks: `balerx guard install claude-code`
-2. Open Claude Code
-3. Ask it to read `~/.ssh/id_rsa`
-4. Verify: Access is blocked
-5. Check log: `balerx log view`
+```bash
+printf '%s' '{"command":"git push --force origin main","cwd":"/tmp"}' \
+  | balerx hook --event-type before_shell_execution
+```
 
-## Future Enhancements
+The default policy asks. Cursor output contains `"permission":"ask"` and the process exits 0.
 
-- **Hooks for other agents**: VS Code Copilot, Windsurf, Codex (when their hook APIs are public)
-- **Remote policy**: Fetch policy from team server instead of local file
-- **Policy DSL**: More expressive conditions (e.g., "allow if file in git repo")
-- **Adaptive throttling**: Slow down agent if it's hammering hooks
-- **Hook marketplace**: Community-contributed policies and detections
+After `balerx guard install`, reopen the agent and confirm `balerx guard status` and `balerx log view`.
 
 ## References
 
-- Claude Code hooks: https://code.claude.com/docs/en/hooks (version 0.x)
-- Cursor hooks: https://cursor.com/docs/hooks (version 0.x)
-- Balerx Guard implementation: `balerx-sensor/crates/balerx-core/src/guard.rs`
-- Policy engine: `balerx-sensor/crates/balerx-core/src/policy.rs`
+- Claude Code hooks: https://docs.claude.com/en/docs/claude-code/hooks
+- Cursor hooks: https://cursor.com/docs/hooks
+- Implementation: `balerx-sensor/crates/balerx-core/src/guard.rs` and `hook_input.rs`

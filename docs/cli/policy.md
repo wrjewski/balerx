@@ -26,8 +26,8 @@ rules:
 | Field | Meaning |
 | --- | --- |
 | `version` | Document version. Default `1.0.0`. |
-| `global.fail_open` | When true, a hook error allows the action. Default `true`. |
-| `global.timeout_ms` | Hook time budget. Default `50`. |
+| `global.fail_open` | When the hook cannot decide, true allows the action and false denies it. That covers invalid JSON and a run that exceeds `timeout_ms`. Default `true`. |
+| `global.timeout_ms` | Hook time budget in milliseconds. The hook compares elapsed time with this value. Default `50`. |
 | `rules[].id` | Stable rule name. |
 | `rules[].enabled` | Skip the rule when false. |
 | `rules[].action` | `allow`, `deny`, or `ask`. |
@@ -37,7 +37,7 @@ rules:
 
 | `type` | Fields | Match |
 | --- | --- | --- |
-| `path_pattern` | `pattern` | Path glob, such as `**/.env` or `**/*.pem`. |
+| `path_pattern` | `pattern` | Path glob, such as `**/.env*` or `**/*.pem`. `.env` and `.env.local` both match `**/.env*`. |
 | `command_pattern` | `pattern` | Regular expression against the shell command. |
 | `server_allowlist` | `servers` | MCP server name is in the list. |
 | `server_denylist` | `servers` | MCP server name is in the list. `*` matches any server. |
@@ -50,7 +50,7 @@ The built-in policy enables these rules:
 | Id | Action | Condition |
 | --- | --- | --- |
 | `deny_ssh_keys` | deny | `path_pattern` `**/.ssh/id_*` |
-| `deny_env_files` | deny | `path_pattern` `**/.env` |
+| `deny_env_files` | deny | `path_pattern` `**/.env*` |
 | `deny_pem_files` | deny | `path_pattern` `**/*.pem` |
 | `deny_curl_pipe_sh` | deny | `command_pattern` `curl.*\|.*sh` |
 | `ask_force_push` | ask | `command_pattern` `git\s+push.*--force` |

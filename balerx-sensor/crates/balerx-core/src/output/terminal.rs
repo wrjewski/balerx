@@ -1,5 +1,25 @@
 use crate::finding::{Finding, FindingSeverity, ScanResult};
 
+fn color_enabled() -> bool {
+    if std::env::var_os("NO_COLOR").is_some() {
+        return false;
+    }
+    std::io::IsTerminal::is_terminal(&std::io::stdout())
+}
+
+fn paint(text: &str, code: &str) -> String {
+    if color_enabled() {
+        format!("{code}{text}\x1b[0m")
+    } else {
+        text.to_string()
+    }
+}
+
+fn row(text: &str) -> String {
+    const WIDTH: usize = 67;
+    format!("│ {text:<WIDTH$} │")
+}
+
 pub fn print_scan_result(result: &ScanResult) {
     println!("\n╔═══════════════════════════════════════════════════════════════════════╗");
     println!("║             Balerx Gate Security Scan Results                        ║");
@@ -10,47 +30,49 @@ pub fn print_scan_result(result: &ScanResult) {
         "Platform: {} {}",
         result.device.platform, result.device.os_version
     );
-    println!(
-        "Scanned: {}\n",
-        result.scanned_at.format("%Y-%m-%d %H:%M:%S UTC")
-    );
+    let local = result.scanned_at.with_timezone(&chrono::Local);
+    println!("Scanned: {}\n", local.format("%Y-%m-%d %H:%M:%S %:z"));
 
-    let risk_indicator = match result.summary.risk_score {
-        0..=25 => "✓ LOW",
-        26..=50 => "⚠ MEDIUM",
-        51..=75 => "⚠ HIGH",
-        _ => "✗ CRITICAL",
-    };
+    let risk_indicator = result.summary.risk_label();
 
     println!("╭─────────────────────────────────────────────────────────────────────╮");
     println!(
-        "│ RISK SCORE: {}/100 [{}]",
-        result.summary.risk_score, risk_indicator
+        "{}",
+        row(&format!(
+            "RISK SCORE: {}/100 [{risk_indicator}]",
+            result.summary.risk_score
+        ))
     );
     println!("├─────────────────────────────────────────────────────────────────────┤");
     println!(
-        "│ Agents Found:    {:<5}                                           │",
-        result.summary.agents_found
+        "{}",
+        row(&format!("Agents Found:    {}", result.summary.agents_found))
     );
     println!(
-        "│ Total Findings:  {:<5}                                           │",
-        result.summary.findings_count
+        "{}",
+        row(&format!(
+            "Total Findings:  {}",
+            result.summary.findings_count
+        ))
     );
     println!(
-        "│ Critical:        {:<5}                                           │",
-        result.summary.critical_count
+        "{}",
+        row(&format!(
+            "Critical:        {}",
+            result.summary.critical_count
+        ))
     );
     println!(
-        "│ High:            {:<5}                                           │",
-        result.summary.high_count
+        "{}",
+        row(&format!("High:            {}", result.summary.high_count))
     );
     println!(
-        "│ Medium:          {:<5}                                           │",
-        result.summary.medium_count
+        "{}",
+        row(&format!("Medium:          {}", result.summary.medium_count))
     );
     println!(
-        "│ Low:             {:<5}                                           │",
-        result.summary.low_count
+        "{}",
+        row(&format!("Low:             {}", result.summary.low_count))
     );
     println!("╰─────────────────────────────────────────────────────────────────────╯\n");
 
@@ -94,12 +116,9 @@ fn print_finding(finding: &Finding) {
         FindingSeverity::Low => ("LOW     ", "\x1b[36m"),
         FindingSeverity::Info => ("INFO    ", "\x1b[34m"),
     };
-    let reset = "\x1b[0m";
+    let label = paint(&format!("[{severity_label}]"), severity_color);
 
-    println!(
-        "┌─ {}[{}]{} {} ({})",
-        severity_color, severity_label, reset, finding.title, finding.rule_id
-    );
+    println!("┌─ {label} {} ({})", finding.title, finding.rule_id);
     println!("│");
     println!("│  {}", finding.description);
 

@@ -6,7 +6,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 rust-version = "1.75"
 license = "Apache-2.0"
@@ -32,7 +32,8 @@ anyhow = "1.0"
 thiserror = "1.0"
 
 # Dates and times
-chrono = { version = "0.4", features = ["serde"] }
+chrono = { version = "0.4", features = ["serde", "clock"] }
+sha2 = "0.10"
 
 # UUIDs
 uuid = { version = "=1.10.0", features = ["v4", "v7", "serde"] }

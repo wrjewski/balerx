@@ -34,6 +34,7 @@ fn help_commands() -> Vec<Vec<&'static str>> {
         vec!["guard", "--help"],
         vec!["guard", "install", "--help"],
         vec!["guard", "uninstall", "--help"],
+        vec!["guard", "status", "--help"],
         vec!["hook", "--help"],
         vec!["log", "--help"],
         vec!["log", "view", "--help"],

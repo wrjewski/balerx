@@ -123,7 +123,7 @@ impl Policy {
                 enabled: true,
                 action: PolicyAction::Deny,
                 conditions: vec![Condition::PathPattern {
-                    pattern: "**/.env".to_string(),
+                    pattern: "**/.env*".to_string(),
                 }],
             },
             PolicyRule {
@@ -199,6 +199,49 @@ impl Policy {
             .with_context(|| format!("Failed to write policy file: {}", path.as_ref().display()))
     }
 
+    /// Evaluates the event against every path found in the resource and command.
+    #[must_use]
+    pub fn evaluate_event(&self, event: &HookEvent) -> PolicyDecision {
+        let mut paths = Vec::new();
+        if let Some(resource) = &event.resource {
+            paths.push(resource.clone());
+        }
+        if let Some(extra) = event
+            .metadata
+            .get("extra_paths")
+            .and_then(serde_json::Value::as_array)
+        {
+            for value in extra {
+                if let Some(path) = value.as_str() {
+                    paths.push(path.to_string());
+                }
+            }
+        }
+        if let Some(command) = &event.command {
+            for token in crate::hook_input::shell_tokens(command) {
+                if crate::hook_input::looks_like_path(&token) {
+                    paths.push(crate::hook_input::expand_user_path(&token));
+                }
+            }
+        }
+        if paths.is_empty() {
+            return self.evaluate(event);
+        }
+        let mut best: Option<PolicyDecision> = None;
+        for path in paths {
+            let mut clone = event.clone();
+            clone.resource = Some(path);
+            let decision = self.evaluate(&clone);
+            best = Some(match best {
+                Some(current) if action_rank(current.action) >= action_rank(decision.action) => {
+                    current
+                }
+                _ => decision,
+            });
+        }
+        best.unwrap_or_else(|| self.evaluate(event))
+    }
+
     #[must_use]
     pub fn evaluate(&self, event: &HookEvent) -> PolicyDecision {
         for rule in &self.rules {
@@ -230,13 +273,10 @@ impl Policy {
 
     fn matches_condition(condition: &Condition, event: &HookEvent) -> bool {
         match condition {
-            Condition::PathPattern { pattern } => {
-                if let Some(resource) = &event.resource {
-                    glob::Pattern::new(pattern).is_ok_and(|p| p.matches(resource))
-                } else {
-                    false
-                }
-            }
+            Condition::PathPattern { pattern } => event
+                .resource
+                .as_deref()
+                .is_some_and(|resource| path_matches(pattern, resource)),
             Condition::CommandPattern { pattern } => {
                 if let Some(command) = &event.command {
                     regex::Regex::new(pattern).is_ok_and(|re| re.is_match(command))
@@ -266,6 +306,36 @@ impl Policy {
             }
         }
     }
+}
+
+fn action_rank(action: PolicyAction) -> u8 {
+    match action {
+        PolicyAction::Deny => 3,
+        PolicyAction::Ask => 2,
+        PolicyAction::Allow => 1,
+    }
+}
+
+fn path_matches(pattern: &str, resource: &str) -> bool {
+    let resource = resource.replace('\\', "/");
+    if glob::Pattern::new(pattern).is_ok_and(|compiled| compiled.matches(&resource)) {
+        return true;
+    }
+    let name = resource.rsplit('/').next().unwrap_or(resource.as_str());
+    if pattern.contains(".env") && (name == ".env" || name.starts_with(".env.")) {
+        return true;
+    }
+    if pattern.contains(".ssh/id_") && resource.contains(".ssh/id_") {
+        return true;
+    }
+    if pattern.contains("*.pem")
+        && name
+            .rsplit_once('.')
+            .is_some_and(|(_, ext)| ext.eq_ignore_ascii_case("pem"))
+    {
+        return true;
+    }
+    false
 }
 
 impl HookEventType {
@@ -342,5 +412,22 @@ mod tests {
 
         let decision = policy.evaluate(&event);
         assert_eq!(decision.action, PolicyAction::Allow);
+    }
+
+    #[test]
+    fn test_env_local_and_command_token() {
+        let policy = Policy::default_policy();
+        let event = HookEvent {
+            event_type: HookEventType::ShellExecution,
+            agent: "claude-code".to_string(),
+            resource: None,
+            command: Some("cat .env.local".to_string()),
+            mcp_server: None,
+            tool_name: Some("Bash".to_string()),
+            metadata: HashMap::new(),
+        };
+        let decision = policy.evaluate_event(&event);
+        assert_eq!(decision.action, PolicyAction::Deny);
+        assert_eq!(decision.matched_rule.as_deref(), Some("deny_env_files"));
     }
 }

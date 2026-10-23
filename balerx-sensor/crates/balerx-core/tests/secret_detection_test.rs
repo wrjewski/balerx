@@ -47,7 +47,7 @@ fn test_detect_openai_key() {
 #[test]
 fn test_detect_anthropic_key() {
     let detector = SecretDetector::new().expect("Should create detector");
-    // Anthropic keys: sk-ant- followed by 95+ characters including hyphens.
+    // Anthropic keys: sk-ant- followed by letters, digits, hyphens, or underscores.
     let text = synthetic_anthropic_key();
 
     let matches = detector.scan_text(&text, "test");

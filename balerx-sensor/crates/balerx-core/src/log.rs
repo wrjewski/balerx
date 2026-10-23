@@ -34,10 +34,7 @@ impl ActivityLog {
 
     #[must_use]
     pub fn default_log() -> Self {
-        let log_dir = dirs::data_local_dir()
-            .unwrap_or_else(|| PathBuf::from("."))
-            .join("balerx")
-            .join("logs");
+        let log_dir = crate::canary::data_root().join("logs");
 
         let log_path = log_dir.join("activity.jsonl");
 
