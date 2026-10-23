@@ -70,11 +70,32 @@ jobs:
           if [[ "${TARGET}" == *windows* ]]; then
             cp "${profile}/balerx.exe" "${stage}/balerx.exe"
             archive="dist/balerx-${TARGET}.zip"
-            # windows-latest bash uses bsdtar, which writes zip when -a sees a .zip name.
-            # An absolute D:\ archive path makes bsdtar treat the drive letter as a remote host.
-            archive_u="$(cygpath -u "${GITHUB_WORKSPACE}/${archive}")"
-            stage_u="$(cygpath -u "${stage}")"
-            tar -a -cf "${archive_u}" --directory "${stage_u}" balerx.exe LICENSE NOTICE
+            # cygpath: GITHUB_WORKSPACE is D:\... and a raw "D:" path is parsed as a remote host.
+            archive_win="$(cygpath -w "${GITHUB_WORKSPACE}/${archive}")"
+            stage_win="$(cygpath -w "${stage}")"
+            # GNU tar -a writes a tar archive even when the name ends in .zip.
+            # install.ps1 unpacks with Expand-Archive, so the asset must be a real zip
+            # with balerx.exe, LICENSE, and NOTICE at the archive root.
+            BALERX_ARCHIVE_WIN="${archive_win}" BALERX_STAGE_WIN="${stage_win}" \
+              powershell.exe -NoProfile -Command '
+                $ErrorActionPreference = "Stop"
+                $archive = $env:BALERX_ARCHIVE_WIN
+                $stage = $env:BALERX_STAGE_WIN
+                if (Test-Path -LiteralPath $archive) { Remove-Item -LiteralPath $archive -Force }
+                Compress-Archive -Path @(
+                  (Join-Path $stage "balerx.exe"),
+                  (Join-Path $stage "LICENSE"),
+                  (Join-Path $stage "NOTICE")
+                ) -DestinationPath $archive
+                $dest = Join-Path $env:RUNNER_TEMP "balerx-zip-test"
+                if (Test-Path -LiteralPath $dest) { Remove-Item -LiteralPath $dest -Recurse -Force }
+                Expand-Archive -LiteralPath $archive -DestinationPath $dest
+                foreach ($name in @("balerx.exe", "LICENSE", "NOTICE")) {
+                  if (-not (Test-Path -LiteralPath (Join-Path $dest $name))) {
+                    throw "zip root is missing $name"
+                  }
+                }
+              '
           else
             cp "${profile}/balerx" "${stage}/balerx"
             archive="dist/balerx-${TARGET}.tar.gz"
@@ -123,6 +144,9 @@ jobs:
           mkdir -p "${stage}"
           find artifacts -type f \( -name 'balerx-*.tar.gz' -o -name 'balerx-*.zip' -o -name 'balerx.spdx.json' \) -exec cp -t "${stage}" {} +
           cd "${stage}"
+          # Reject a tar archive renamed to .zip before hashing the files that ship.
+          python3 -m zipfile -t balerx-x86_64-pc-windows-msvc.zip
+          python3 -m zipfile -t balerx-aarch64-pc-windows-msvc.zip
           sha256sum balerx-*.tar.gz balerx-*.zip > SHA256SUMS
           assets=(
             balerx-x86_64-unknown-linux-gnu.tar.gz
