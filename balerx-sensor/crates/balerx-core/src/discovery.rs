@@ -19,6 +19,18 @@ impl AgentDiscovery {
     }
 
     pub fn discover_all(&self) -> Vec<Agent> {
+        let discovered = self.discover();
+        info!("Discovered {} agents", discovered.len());
+        discovered
+    }
+
+    /// Same result as [`discover_all`], without the info log.
+    #[must_use]
+    pub fn discover_quiet(&self) -> Vec<Agent> {
+        self.discover()
+    }
+
+    fn discover(&self) -> Vec<Agent> {
         let mut discovered = Vec::new();
 
         for def in &self.definitions {
@@ -27,7 +39,6 @@ impl AgentDiscovery {
             }
         }
 
-        info!("Discovered {} agents", discovered.len());
         discovered
     }
 
@@ -67,12 +78,13 @@ impl AgentDiscovery {
             config_paths,
             status,
             process_id: None,
+            guard_coverage: crate::rules::guard_coverage_note(&def.id, &def.name),
         })
     }
 
     fn is_agent_likely_installed(&self, def: &AgentDefinition) -> bool {
         if def.id == "cursor" {
-            if let Some(home) = dirs::home_dir() {
+            if let Some(home) = crate::agent::home_dir() {
                 if home.join(".cursor").is_dir() {
                     return true;
                 }
@@ -177,14 +189,15 @@ impl ConfigScanner {
         };
 
         let content = std::fs::read_to_string(path)?;
-        let inspected = config::inspect_contents(path, &content);
+        let content = config::strip_utf8_bom(&content);
+        let inspected = config::inspect_contents(path, content);
         result.issues = inspected.issues;
         result.mcp_config = inspected.mcp;
         let location = path.to_string_lossy();
-        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(content) {
             result.secrets_found = self.secret_detector.scan_json(&json, &location);
         } else {
-            result.secrets_found = self.secret_detector.scan_text(&content, &location);
+            result.secrets_found = self.secret_detector.scan_text(content, &location);
         }
 
         Ok(result)

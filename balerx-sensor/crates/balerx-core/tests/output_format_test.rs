@@ -1,8 +1,8 @@
 use balerx_core::{
     agent::{Agent, AgentDefinition, AgentStatus},
     finding::{Finding, FindingSeverity, ScanResult},
-    output::{write_json, write_sarif},
-    rules::RuleId,
+    output::{write_html, write_json, write_sarif},
+    rules::{hook_gap_install_fix, RuleId},
 };
 use std::path::PathBuf;
 
@@ -23,6 +23,7 @@ fn test_json_output_format() {
         path: None,
         status: AgentStatus::Configured,
         process_id: None,
+        guard_coverage: None,
     };
 
     result.add_agent(agent);
@@ -76,6 +77,7 @@ fn test_sarif_output_format() {
         path: None,
         status: AgentStatus::Configured,
         process_id: None,
+        guard_coverage: None,
     };
 
     result.add_agent(agent);
@@ -229,7 +231,7 @@ fn assert_public_scanner_urls(content: &str) {
 
 #[test]
 fn sarif_uri_outside_the_working_directory_is_home_relative() {
-    let home = dirs::home_dir().expect("home");
+    let home = balerx_core::agent::home_dir().expect("home");
     let resource = home.join(".cursor").join("mcp.json");
     let mut result = ScanResult::new();
     result.add_finding(
@@ -252,4 +254,65 @@ fn sarif_uri_outside_the_working_directory_is_home_relative() {
     assert_eq!(uri, "~/.cursor/mcp.json");
     assert_public_scanner_urls(&content);
     std::fs::remove_file(sarif_path).ok();
+}
+
+#[test]
+fn hook_gap_fix_is_the_same_in_json_sarif_and_html() {
+    let claude = hook_gap_install_fix("claude-code").expect("claude fix");
+    let cursor = hook_gap_install_fix("cursor").expect("cursor fix");
+    assert_eq!(
+        claude,
+        "Run: balerx guard install claude-code\nMore: https://balerxgate.com/docs/guard"
+    );
+    assert_eq!(
+        cursor,
+        "Run: balerx guard install cursor\nMore: https://balerxgate.com/docs/guard"
+    );
+    assert!(hook_gap_install_fix("claude").is_none());
+    assert!(hook_gap_install_fix("Claude Code").is_none());
+
+    let mut result = ScanResult::new();
+    result.add_finding(
+        Finding::new(
+            RuleId::HookGapNoGuard,
+            FindingSeverity::Medium,
+            "Guard hooks are not installed for Claude Code".to_string(),
+            "This agent has a config file and no Balerx hook entry".to_string(),
+        )
+        .with_agent("Claude Code")
+        .with_resource("/tmp/claude/settings.json")
+        .with_fix(claude.clone()),
+    );
+
+    let dir = std::env::temp_dir().join(format!("balerx-hook-gap-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).expect("temp dir");
+    let json_path = dir.join("scan.json");
+    let sarif_path = dir.join("scan.sarif");
+    let html_path = dir.join("scan.html");
+    write_json(&result, &json_path).expect("json");
+    write_sarif(&result, &sarif_path).expect("sarif");
+    write_html(&result, &html_path).expect("html");
+
+    let json = std::fs::read_to_string(&json_path).expect("read json");
+    let sarif = std::fs::read_to_string(&sarif_path).expect("read sarif");
+    let html = std::fs::read_to_string(&html_path).expect("read html");
+    for report in [&json, &sarif, &html] {
+        assert!(report.contains("Run: balerx guard install claude-code"));
+        assert!(report.contains("More: https://balerxgate.com/docs/guard"));
+        assert!(!report.contains("for this agent"));
+    }
+    let parsed_json: serde_json::Value = serde_json::from_str(&json).expect("json");
+    assert_eq!(
+        parsed_json["findings"][0]["suggested_fix"].as_str(),
+        Some(claude.as_str())
+    );
+    let parsed_sarif: serde_json::Value = serde_json::from_str(&sarif).expect("sarif json");
+    let message = parsed_sarif["runs"][0]["results"][0]["message"]["text"]
+        .as_str()
+        .expect("message");
+    assert!(message.ends_with(&claude));
+    assert!(html.contains(
+        "Suggested Fix:</strong> Run: balerx guard install claude-code<br>More: https://balerxgate.com/docs/guard"
+    ));
+    std::fs::remove_dir_all(&dir).ok();
 }

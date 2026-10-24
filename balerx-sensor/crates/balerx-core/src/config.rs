@@ -3,6 +3,8 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
 
+const SCAN_DOCS: &str = "https://balerxgate.com/docs/scan";
+
 #[derive(Debug, Clone, Serialize)]
 pub struct McpConfig {
     #[serde(rename = "mcpServers")]
@@ -37,11 +39,12 @@ impl McpConfig {
     /// Returns an error if the file cannot be read or is not JSON or TOML the parser understands.
     pub fn parse_file(path: &Path) -> anyhow::Result<Self> {
         let content = std::fs::read_to_string(path)?;
+        let content = strip_utf8_bom(&content);
         let ext = path.extension().and_then(|ext| ext.to_str()).unwrap_or("");
         if ext.eq_ignore_ascii_case("toml") {
-            return Ok(Self::from_toml(&content).unwrap_or_else(Self::empty));
+            return Ok(Self::from_toml(content).unwrap_or_else(Self::empty));
         }
-        let value: Value = serde_json::from_str(&content)?;
+        let value: Value = serde_json::from_str(content)?;
         Ok(Self::from_json(&value))
     }
 
@@ -104,6 +107,12 @@ pub fn inspect_file(path: &Path) -> anyhow::Result<InspectedConfig> {
     Ok(inspect_contents(path, &content))
 }
 
+/// Drops one leading UTF-8 BOM so a VS Code or editor save can still be parsed.
+#[must_use]
+pub fn strip_utf8_bom(content: &str) -> &str {
+    content.strip_prefix('\u{feff}').unwrap_or(content)
+}
+
 #[must_use]
 pub fn inspect_contents(path: &Path, content: &str) -> InspectedConfig {
     let ext = path
@@ -111,27 +120,35 @@ pub fn inspect_contents(path: &Path, content: &str) -> InspectedConfig {
         .and_then(|ext| ext.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
-    if ext == "toml" {
-        return inspect_toml(content);
-    }
-    if ext == "json" || ext.is_empty() {
-        return match serde_json::from_str::<Value>(content) {
-            Ok(value) => inspect_json(content, &value),
-            Err(error) => InspectedConfig {
-                mcp: None,
-                issues: vec![ConfigIssue {
-                    server_name: String::new(),
-                    issue_type: IssueType::BrokenConfig,
-                    description: format!("Configuration file is not valid JSON: {error}"),
-                    resource: path.display().to_string(),
-                    line: u32::try_from(error.line()).ok(),
-                }],
-            },
+    let content = strip_utf8_bom(content);
+    let config_text = matches!(ext.as_str(), "" | "json" | "toml" | "yaml" | "yml");
+    if !config_text {
+        return InspectedConfig {
+            mcp: None,
+            issues: Vec::new(),
         };
     }
-    InspectedConfig {
-        mcp: None,
-        issues: Vec::new(),
+    if content.trim().is_empty() {
+        return InspectedConfig {
+            mcp: None,
+            issues: vec![empty_config_issue(path)],
+        };
+    }
+    if ext == "yaml" || ext == "yml" {
+        return InspectedConfig {
+            mcp: None,
+            issues: Vec::new(),
+        };
+    }
+    if ext == "toml" {
+        return inspect_toml(path, content);
+    }
+    match serde_json::from_str::<Value>(content) {
+        Ok(value) => inspect_json(content, &value),
+        Err(error) => InspectedConfig {
+            mcp: None,
+            issues: vec![broken_json_issue(path, &error)],
+        },
     }
 }
 
@@ -152,18 +169,79 @@ fn inspect_json(content: &str, value: &Value) -> InspectedConfig {
     }
 }
 
-fn inspect_toml(content: &str) -> InspectedConfig {
-    let Ok(value) = toml::from_str::<toml::Value>(content) else {
-        return InspectedConfig {
-            mcp: None,
-            issues: vec![ConfigIssue {
-                server_name: String::new(),
-                issue_type: IssueType::BrokenConfig,
-                description: "Configuration file is not valid TOML".to_string(),
-                resource: "config.toml".to_string(),
-                line: Some(1),
-            }],
-        };
+fn empty_config_issue(path: &Path) -> ConfigIssue {
+    ConfigIssue {
+        server_name: String::new(),
+        issue_type: IssueType::EmptyConfig,
+        description: "Configuration file is empty".to_string(),
+        resource: path.display().to_string(),
+        line: None,
+    }
+}
+
+fn broken_json_issue(path: &Path, error: &serde_json::Error) -> ConfigIssue {
+    ConfigIssue {
+        server_name: String::new(),
+        issue_type: IssueType::BrokenConfig,
+        description: format!("Configuration file is not valid JSON: {error}. More: {SCAN_DOCS}"),
+        resource: path.display().to_string(),
+        line: u32::try_from(error.line()).ok(),
+    }
+}
+
+fn broken_toml_issue(path: &Path, content: &str, error: &toml::de::Error) -> ConfigIssue {
+    let (line, column) = line_column_at(content, error.span());
+    let description = match (line, column) {
+        (Some(line), Some(column)) => format!(
+            "Configuration file is not valid TOML: {} at line {line} column {column}. More: {SCAN_DOCS}",
+            error.message()
+        ),
+        _ => format!(
+            "Configuration file is not valid TOML: {}. More: {SCAN_DOCS}",
+            error.message()
+        ),
+    };
+    ConfigIssue {
+        server_name: String::new(),
+        issue_type: IssueType::BrokenConfig,
+        description,
+        resource: path.display().to_string(),
+        line,
+    }
+}
+
+fn line_column_at(
+    content: &str,
+    span: Option<std::ops::Range<usize>>,
+) -> (Option<u32>, Option<usize>) {
+    let Some(span) = span else {
+        return (None, None);
+    };
+    let mut line = 1u32;
+    let mut column = 1usize;
+    for (index, ch) in content.char_indices() {
+        if index >= span.start {
+            break;
+        }
+        if ch == '\n' {
+            line = line.saturating_add(1);
+            column = 1;
+        } else {
+            column += 1;
+        }
+    }
+    (Some(line), Some(column))
+}
+
+fn inspect_toml(path: &Path, content: &str) -> InspectedConfig {
+    let value = match toml::from_str::<toml::Value>(content) {
+        Ok(value) => value,
+        Err(error) => {
+            return InspectedConfig {
+                mcp: None,
+                issues: vec![broken_toml_issue(path, content, &error)],
+            };
+        }
     };
     let mcp = McpConfig::from_toml(content).unwrap_or_else(McpConfig::empty);
     let mut issues = mcp.find_issues();
@@ -792,6 +870,7 @@ pub enum IssueType {
     BroadFilesystem,
     NoAuth,
     BrokenConfig,
+    EmptyConfig,
     DockerPrivileged,
     RootMount,
     AutoApprove,

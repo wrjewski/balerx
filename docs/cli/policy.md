@@ -2,6 +2,26 @@
 
 The policy file is YAML. `balerx guard` and `balerx hook` load `~/.balerx/policy.yaml`. If that file is missing, the built-in default policy is used.
 
+`balerx setup` prints a Balerx Gate banner, then writes that file from a checklist. `balerx policy init` does the same. `balerx policy edit` does not print the banner. The command stays offline. `balerx setup --yes` writes the balanced preset. `--preset strict` denies the shell, package, and MCP rows that balanced asks about. `--preset minimal` enables only the secret-file rules. When `~/.balerx/policy.yaml` already exists, `--yes` and `--preset` leave it in place and exit with an error. Pass `--replace` to copy the current file to `policy.yaml.bak` and write a new one. `balerx policy show` prints the file, or the built-in policy when the file is missing. `balerx policy edit` opens the checklist pre-filled from the file.
+
+The checklist offers rules the hook engine can match:
+
+| Row | Balanced | Strict | Minimal |
+| --- | --- | --- | --- |
+| Block reading secret files (`.env`, SSH keys, PEM, and cloud and CLI credential files) | deny | deny | deny |
+| `rm -rf`, `git push --force`, and `drop database` or `drop table` | ask | deny | off |
+| `curl` or `wget` piped to a shell | ask | deny | off |
+| Package install commands (`npm`, `pnpm`, `yarn`, `bun`, `pip`, `uv`, `cargo`, `go get`) | ask | deny | off |
+| Every MCP server call | ask | deny | off |
+
+These are not offered. The hook engine cannot enforce them:
+
+- Block writing outside the project folder. A hook does not compare a write with the project directory.
+- Block unknown or unpinned MCP servers. A hook sees the server name, not a package pin.
+- A switch for the activity log. Each hook call is appended to the log while hooks are installed.
+
+`fail_open` stays true and `timeout_ms` stays 50.
+
 `balerx policy pull` can replace the local file. It does not run unless you pass `--api-url` and `--api-key`, or set `BALERX_API_URL` and `BALERX_API_KEY`. Invalid YAML is rejected and the previous file is left in place. `--output` chooses a path other than `~/.balerx/policy.yaml`.
 
 No API host is compiled in. Use the API URL shown in your Balerx Gate dashboard's onboarding. The client calls `GET {api-url}/v1/ingest/policy` with `Authorization: Bearer <api-key>`.

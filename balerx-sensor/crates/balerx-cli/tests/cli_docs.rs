@@ -22,7 +22,12 @@ fn run_help(args: &[&str]) -> String {
         args.join(" "),
         String::from_utf8_lossy(&output.stderr)
     );
-    String::from_utf8_lossy(&output.stdout).replace("\r\n", "\n")
+    String::from_utf8_lossy(&output.stdout)
+        .replace("\r\n", "\n")
+        .lines()
+        .map(str::trim_end)
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn help_commands() -> Vec<Vec<&'static str>> {
@@ -44,10 +49,16 @@ fn help_commands() -> Vec<Vec<&'static str>> {
         vec!["canary", "list", "--help"],
         vec!["canary", "check", "--help"],
         vec!["upload", "--help"],
+        vec!["setup", "--help"],
         vec!["policy", "--help"],
+        vec!["policy", "init", "--help"],
+        vec!["policy", "show", "--help"],
+        vec!["policy", "edit", "--help"],
         vec!["policy", "pull", "--help"],
+        vec!["uninstall", "--help"],
         vec!["doctor", "--help"],
         vec!["completions", "--help"],
+        vec!["version", "--help"],
         vec!["self-update", "--help"],
     ]
 }
@@ -230,4 +241,86 @@ fn documented_cli_flags_exist() {
         "documented commands missing from clap help:\n{}",
         missing_commands.join("\n")
     );
+}
+
+fn top_level_commands() -> Vec<String> {
+    let help = run_help(&["--help"]);
+    let mut commands = Vec::new();
+    let mut in_commands = false;
+    for line in help.lines() {
+        if line == "Commands:" {
+            in_commands = true;
+            continue;
+        }
+        if !in_commands {
+            continue;
+        }
+        if line.is_empty() || line.starts_with("Options:") {
+            break;
+        }
+        let name = line.split_whitespace().next().unwrap_or("");
+        if !name.is_empty() {
+            commands.push(name.to_string());
+        }
+    }
+    commands
+}
+
+#[test]
+fn every_cli_subcommand_is_documented() {
+    let commands = top_level_commands();
+    assert!(commands.iter().any(|command| command == "setup"));
+    assert!(commands.iter().any(|command| command == "version"));
+    assert!(commands.iter().any(|command| command == "self-update"));
+
+    let cli_page = docs_dir().join("cli.md");
+    if cli_page.is_file() {
+        let text = fs::read_to_string(&cli_page).expect("read cli.md");
+        let prose = text
+            .split("<!-- cli-help:start -->")
+            .next()
+            .expect("cli help marker");
+        for command in &commands {
+            assert!(
+                prose.contains(&format!("`{command}`")),
+                "apps/balerx-web/content/docs/cli.md command table is missing {command}"
+            );
+        }
+        for needle in [
+            "balerx setup",
+            "balerx self-update --check",
+            "https://balerxgate.com/docs/cli",
+        ] {
+            assert!(text.contains(needle), "cli.md is missing {needle}");
+        }
+    }
+
+    let mut exported = String::new();
+    let docs = repo_root().join("docs/cli");
+    for entry in fs::read_dir(&docs).unwrap_or_else(|_| panic!("read {}", docs.display())) {
+        let path = entry.expect("docs/cli entry").path();
+        if path.extension().is_some_and(|ext| ext == "md") {
+            exported.push_str(&fs::read_to_string(&path).expect("read exported cli doc"));
+            exported.push('\n');
+        }
+    }
+    for command in &commands {
+        let needle = format!("balerx {command}");
+        assert!(exported.contains(&needle), "docs/cli is missing {needle}");
+    }
+
+    let completions = run_help(&["completions", "bash"]);
+    for name in [
+        "setup",
+        "policy",
+        "version",
+        "self-update",
+        "doctor",
+        "uninstall",
+    ] {
+        assert!(
+            completions.contains(name),
+            "bash completions are missing {name}"
+        );
+    }
 }

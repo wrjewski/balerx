@@ -366,12 +366,12 @@ pub(crate) fn looks_like_path(token: &str) -> bool {
 pub(crate) fn expand_user_path(path: &str) -> String {
     let trimmed = path.trim_matches(|ch: char| matches!(ch, '"' | '\'' | ' '));
     if let Some(rest) = trimmed.strip_prefix("~/") {
-        if let Some(home) = dirs::home_dir() {
+        if let Some(home) = crate::agent::home_dir() {
             return home.join(rest).to_string_lossy().replace('\\', "/");
         }
     }
     if trimmed == "~" {
-        if let Some(home) = dirs::home_dir() {
+        if let Some(home) = crate::agent::home_dir() {
             return home.to_string_lossy().replace('\\', "/");
         }
     }

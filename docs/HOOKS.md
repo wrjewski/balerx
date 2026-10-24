@@ -2,9 +2,11 @@
 
 ## Overview
 
-Balerx Guard integrates with AI coding agents through their native hook systems. `balerx guard install` merges entries into the agent's settings file. It does not replace other hooks. `balerx guard uninstall` removes only commands that contain both `balerx` and `hook`. It does not restore a backup.
+Balerx Guard integrates with AI coding agents through their native hook systems. `balerx guard install` merges entries into the agent's settings file. It does not replace other hooks. `balerx guard uninstall` removes only commands that run the `balerx` binary, or `balerx.exe`, with a `hook` argument. It does not restore a backup.
 
-Check the result with `balerx guard status`. The command prints the Claude and Cursor files, whether a Balerx hook is present, the policy `fail_open` and `timeout_ms` values, and the activity log path. It exits 1 when no Balerx hook is installed.
+`balerx uninstall` removes those commands from both agents and asks first. A command matches when it contains `balerx` and `hook` and it runs the `balerx` binary, or `balerx.exe`, with a separate `hook` argument. `my-balerx-webhook.sh` stays. Empty hook lists left behind are removed. `balerx guard uninstall <agent>` still removes one agent and does not ask.
+
+Check the result with `balerx guard status`. The command prints the Claude and Cursor files, whether a Balerx hook is present, the policy `fail_open` and `timeout_ms` values, and the activity log path. A fresh install exits 0 and prints `Not installed — run: balerx guard install claude-code` and `Not installed — run: balerx guard install cursor`. `--strict` and `--check` exit 1 when no Balerx hook is installed.
 
 ## Claude Code Hooks
 

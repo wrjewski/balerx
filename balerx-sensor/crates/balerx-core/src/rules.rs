@@ -98,9 +98,31 @@ impl RuleId {
             Self::ToolPoisonExfiltration => "Instruction text tries to send data out.",
             Self::HookGapNoGuard => "Agent is configured and Guard hooks are not installed.",
             Self::HookGapNoTelemetry => "Agent has no telemetry upload configured.",
-            Self::ConfigInvalid => "Agent config file is not valid JSON or TOML.",
+            Self::ConfigInvalid => "Agent config file is empty or is not valid JSON or TOML.",
         }
     }
+}
+
+/// Exact install command for HOOK-GAP-001. Other agents have no `guard install` value.
+#[must_use]
+pub fn hook_gap_install_fix(definition_id: &str) -> Option<String> {
+    match definition_id {
+        "claude-code" | "cursor" => Some(format!(
+            "Run: balerx guard install {definition_id}\nMore: https://balerxgate.com/docs/guard"
+        )),
+        _ => None,
+    }
+}
+
+/// Note for a discovered agent that Guard cannot hook. Not a finding and not HOOK-GAP-002.
+#[must_use]
+pub fn guard_coverage_note(definition_id: &str, name: &str) -> Option<String> {
+    if hook_gap_install_fix(definition_id).is_some() {
+        return None;
+    }
+    Some(format!(
+        "Guard hooks are not available for {name} yet, so its tool calls aren't intercepted. The scan still checks its config."
+    ))
 }
 
 impl fmt::Display for RuleId {
@@ -138,5 +160,29 @@ impl RuleEngine {
 impl Default for RuleEngine {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::guard_coverage_note;
+
+    #[test]
+    fn coverage_note_is_only_for_agents_without_guard() {
+        assert!(guard_coverage_note("claude-code", "Claude Code").is_none());
+        assert!(guard_coverage_note("cursor", "Cursor").is_none());
+        let vscode = guard_coverage_note("vscode-copilot", "VS Code with GitHub Copilot")
+            .expect("vscode note");
+        let codex = guard_coverage_note("codex-cli", "Codex CLI").expect("codex note");
+        assert_eq!(
+            vscode,
+            "Guard hooks are not available for VS Code with GitHub Copilot yet, so its tool calls aren't intercepted. The scan still checks its config."
+        );
+        assert_eq!(
+            codex,
+            "Guard hooks are not available for Codex CLI yet, so its tool calls aren't intercepted. The scan still checks its config."
+        );
+        assert!(!vscode.contains("HOOK-GAP"));
+        assert!(!codex.contains("HOOK-GAP"));
     }
 }

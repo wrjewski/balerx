@@ -15,6 +15,10 @@ balerx scan --json results.json --quiet
 
 `scan` accepts an optional path. A directory is the poison-scan root. A file is scanned as one config. Logs and tracing go to stderr. `--quiet` (`-q`) turns tracing off and skips the terminal report. Color is off when `NO_COLOR` or `--no-color` is set, or stdout is not a terminal. The timestamp is the local clock.
 
+When `~/.balerx/policy.yaml` is missing, stderr includes `No policy set yet. Run: balerx setup`. `--quiet` hides that line. The scan does not open the checklist.
+
+HOOK-GAP-001's suggested fix is `Run: balerx guard install claude-code` or `Run: balerx guard install cursor`, plus `More: https://balerxgate.com/docs/guard`. An empty, whitespace-only, or BOM-only JSON, TOML, or YAML config is info and the message is `Configuration file is empty`. The suggested fix matches the file: `{ "servers": {} }` for a VS Code `mcp.json`, `{ "mcpServers": {} }` for Cursor, Claude, Windsurf, Cline, Roo, and Gemini JSON, and `[mcp_servers]` or `[mcp_servers.<name>]` for Codex TOML. Claude Code `settings.json` and VS Code `settings.json` suggest `{}`. Aider, Continue, and Goose suggest YAML. Malformed JSON or TOML stays high and includes the parser line and column.
+
 `--exclude PATH` drops findings under that path. Repeat it to skip more than one. `--baseline FILE` reads a JSON file shaped as `{"ignore":[{"rule_id":"MCP-REMOTE-001","resource":".cursor/mcp.json"}]}` and hides those findings. `rule_id` is the rule code.
 
 `--format json`, `--format sarif`, and `--format text` write that report to stdout. `--json`, `--sarif`, and `--html` still write files.
@@ -76,5 +80,5 @@ Rules are compiled into `balerx-core` (`RuleId` in `crates/balerx-core/src/rules
 | `SECRET` | Keys and tokens in config, env, and args. Values are redacted in output |
 | `AGENT-AUTONOMY` | `approval_policy: never`, `bypassPermissions`, `Bash(*)`, `danger-full-access` |
 | `TOOL-POISON` | Hidden instructions and exfiltration wording in the scan directory |
-| `HOOK-GAP` | Claude Code or Cursor configured without a Balerx hook. Missing telemetry (`HOOK-GAP-002`) is planned |
-| `CONFIG` | A discovered config file that is not valid JSON or TOML (`CONFIG-001`) |
+| `HOOK-GAP` | Claude Code or Cursor configured without a Balerx hook. Missing telemetry (`HOOK-GAP-002`) is planned and current scans do not raise it. Other discovered agents get a Guard coverage line in the agents section. That line is separate from findings, leaves the risk score unchanged, and does not trip `--fail-on` |
+| `CONFIG` | An empty config file is info. A file that is not valid JSON or TOML is high (`CONFIG-001`) |

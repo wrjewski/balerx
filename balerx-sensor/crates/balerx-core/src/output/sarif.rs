@@ -13,6 +13,15 @@ pub struct SarifReport {
 pub struct SarifRun {
     pub tool: SarifTool,
     pub results: Vec<SarifResult>,
+    /// Coverage notes for agents Guard cannot hook. Not SARIF results, so they are not alerts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub properties: Option<SarifProperties>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SarifProperties {
+    #[serde(rename = "guardCoverage")]
+    pub guard_coverage: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -102,7 +111,7 @@ pub fn to_sarif(result: &ScanResult) -> SarifReport {
             rule_id: finding.rule_id.to_string(),
             level: severity_to_sarif_level(finding.severity),
             message: SarifMessage {
-                text: format!("{}: {}", finding.title, finding.description),
+                text: sarif_message(finding),
             },
             locations: vec![SarifLocation {
                 physical_location: SarifPhysicalLocation {
@@ -114,6 +123,19 @@ pub fn to_sarif(result: &ScanResult) -> SarifReport {
             }],
         })
         .collect();
+
+    let coverage: Vec<String> = result
+        .agents
+        .iter()
+        .filter_map(|agent| agent.guard_coverage.clone())
+        .collect();
+    let properties = if coverage.is_empty() {
+        None
+    } else {
+        Some(SarifProperties {
+            guard_coverage: coverage,
+        })
+    };
 
     SarifReport {
         version: "2.1.0".to_string(),
@@ -128,13 +150,23 @@ pub fn to_sarif(result: &ScanResult) -> SarifReport {
                 },
             },
             results,
+            properties,
         }],
+    }
+}
+
+fn sarif_message(finding: &crate::finding::Finding) -> String {
+    match finding.suggested_fix.as_deref() {
+        Some(fix) if !fix.is_empty() => {
+            format!("{}: {}\n{fix}", finding.title, finding.description)
+        }
+        _ => format!("{}: {}", finding.title, finding.description),
     }
 }
 
 fn relative_uri(path: &str) -> String {
     let cwd = std::env::current_dir().ok();
-    crate::lockfile::portable_uri(path, cwd.as_deref(), dirs::home_dir().as_deref())
+    crate::lockfile::portable_uri(path, cwd.as_deref(), crate::agent::home_dir().as_deref())
 }
 
 fn severity_to_sarif_level(severity: FindingSeverity) -> String {
