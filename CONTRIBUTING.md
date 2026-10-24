@@ -22,7 +22,7 @@ The SecurityEvent package is independent of the Rust workspace. From `packages/e
 - New or updated agent fingerprints, with fixtures that contain no real configuration from your machine.
 - Detection rules, with tests.
 - Platform-specific path coverage on Windows, macOS, and Linux.
-- Output formats and docs.
+- Output formats and docs. `docs/cli/` names every top-level `balerx` command, including `setup`, `doctor`, `completions`, `version`, and `self-update`. `balerx completions bash` prints those names.
 
 ## Secrets in changes
 

@@ -186,14 +186,82 @@ API_KEY={api_key}\n",
     }
 }
 
-/// Joins short pieces so a source file never contains one complete provider key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DataOs {
+    Windows,
+    Macos,
+    Linux,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct DataRootInput<'a> {
+    pub balerx_data_dir: Option<&'a std::ffi::OsStr>,
+    pub local_app_data: Option<&'a std::ffi::OsStr>,
+    pub xdg_data_home: Option<&'a std::ffi::OsStr>,
+    pub home: Option<&'a Path>,
+    pub os: DataOs,
+}
+
+/// Data directory used by the activity log and the canary registry.
+///
+/// `BALERX_DATA_DIR` wins. Otherwise the directory is the platform data folder
+/// joined with `balerx`, and that folder's home is [`crate::agent::home_dir`].
 pub(crate) fn data_root() -> PathBuf {
-    if let Some(dir) = std::env::var_os("BALERX_DATA_DIR") {
+    let balerx_data_dir = std::env::var_os("BALERX_DATA_DIR");
+    let local_app_data = std::env::var_os("LOCALAPPDATA");
+    let xdg_data_home = std::env::var_os("XDG_DATA_HOME");
+    let home = crate::agent::home_dir();
+    data_root_from(&DataRootInput {
+        balerx_data_dir: balerx_data_dir.as_deref(),
+        local_app_data: local_app_data.as_deref(),
+        xdg_data_home: xdg_data_home.as_deref(),
+        home: home.as_deref(),
+        os: current_data_os(),
+    })
+}
+
+pub(crate) fn current_data_os() -> DataOs {
+    if cfg!(windows) {
+        DataOs::Windows
+    } else if cfg!(target_os = "macos") {
+        DataOs::Macos
+    } else {
+        DataOs::Linux
+    }
+}
+
+pub(crate) fn data_root_from(input: &DataRootInput<'_>) -> PathBuf {
+    if let Some(dir) = nonempty(input.balerx_data_dir) {
         return PathBuf::from(dir);
     }
-    dirs::data_local_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("balerx")
+    if let Some(base) = platform_data_base(input) {
+        return base.join("balerx");
+    }
+    PathBuf::from(".").join("balerx")
+}
+
+fn nonempty(value: Option<&std::ffi::OsStr>) -> Option<&std::ffi::OsStr> {
+    value.filter(|value| !value.is_empty())
+}
+
+fn platform_data_base(input: &DataRootInput<'_>) -> Option<PathBuf> {
+    match input.os {
+        DataOs::Windows => {
+            if let Some(local) = nonempty(input.local_app_data) {
+                return Some(PathBuf::from(local));
+            }
+            input.home.map(|home| home.join("AppData").join("Local"))
+        }
+        DataOs::Macos => input
+            .home
+            .map(|home| home.join("Library").join("Application Support")),
+        DataOs::Linux => {
+            if let Some(xdg) = nonempty(input.xdg_data_home) {
+                return Some(PathBuf::from(xdg));
+            }
+            input.home.map(|home| home.join(".local").join("share"))
+        }
+    }
 }
 
 fn paths_match(left: &Path, right: &Path) -> bool {
@@ -358,5 +426,60 @@ mod tests {
         assert!(manager.is_canary(&canary_path).is_some());
 
         let _ = fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn data_root_uses_the_same_home_and_keeps_overrides() {
+        let home = PathBuf::from("/profile");
+        let linux = DataRootInput {
+            balerx_data_dir: None,
+            local_app_data: None,
+            xdg_data_home: None,
+            home: Some(&home),
+            os: DataOs::Linux,
+        };
+        assert_eq!(
+            data_root_from(&linux),
+            PathBuf::from("/profile/.local/share/balerx")
+        );
+        let custom = DataRootInput {
+            balerx_data_dir: Some(std::ffi::OsStr::new("/home/ada/Documents")),
+            ..linux
+        };
+        assert_eq!(
+            data_root_from(&custom),
+            PathBuf::from("/home/ada/Documents")
+        );
+        let xdg = DataRootInput {
+            xdg_data_home: Some(std::ffi::OsStr::new("/xdg")),
+            balerx_data_dir: None,
+            ..linux
+        };
+        assert_eq!(data_root_from(&xdg), PathBuf::from("/xdg/balerx"));
+        let windows = DataRootInput {
+            balerx_data_dir: None,
+            local_app_data: Some(std::ffi::OsStr::new(r"C:\Users\Ada\AppData\Local")),
+            xdg_data_home: None,
+            home: Some(&home),
+            os: DataOs::Windows,
+        };
+        assert_eq!(
+            data_root_from(&windows),
+            PathBuf::from(r"C:\Users\Ada\AppData\Local").join("balerx")
+        );
+        let macos = DataRootInput {
+            os: DataOs::Macos,
+            local_app_data: None,
+            ..linux
+        };
+        assert_eq!(
+            data_root_from(&macos),
+            PathBuf::from("/profile/Library/Application Support/balerx")
+        );
+        let missing = DataRootInput {
+            home: None,
+            ..linux
+        };
+        assert_eq!(data_root_from(&missing), PathBuf::from("./balerx"));
     }
 }

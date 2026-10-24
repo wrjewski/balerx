@@ -2,7 +2,7 @@ name: Balerx Gate scan
 description: Download a prebuilt balerx release, scan the workspace, and upload SARIF.
 inputs:
   version:
-    description: Release version without a leading v. Empty uses the latest release.
+    description: Release version without a leading v, for example 0.1.5. Empty uses the latest release.
     required: false
     default: ''
   path:

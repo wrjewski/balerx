@@ -1,0 +1,69 @@
+[
+  {
+    "file": "empty.json",
+    "issue_type": "EmptyConfig",
+    "description": "Configuration file is empty"
+  },
+  {
+    "file": "whitespace.json",
+    "issue_type": "EmptyConfig",
+    "description": "Configuration file is empty"
+  },
+  {
+    "file": "bom-only.json",
+    "issue_type": "EmptyConfig",
+    "description": "Configuration file is empty"
+  },
+  {
+    "file": "bom-whitespace.json",
+    "issue_type": "EmptyConfig",
+    "description": "Configuration file is empty"
+  },
+  {
+    "file": "settings.json",
+    "issue_type": "EmptyConfig",
+    "description": "Configuration file is empty"
+  },
+  {
+    "file": "empty.toml",
+    "issue_type": "EmptyConfig",
+    "description": "Configuration file is empty"
+  },
+  {
+    "file": "whitespace.toml",
+    "issue_type": "EmptyConfig",
+    "description": "Configuration file is empty"
+  },
+  {
+    "file": "truncated.json",
+    "issue_type": "BrokenConfig",
+    "description_contains": [
+      "Configuration file is not valid JSON:",
+      "line",
+      "column",
+      "https://balerxgate.com/docs/scan"
+    ]
+  },
+  {
+    "file": "truncated.toml",
+    "issue_type": "BrokenConfig",
+    "description_contains": [
+      "Configuration file is not valid TOML:",
+      "at line",
+      "column",
+      "https://balerxgate.com/docs/scan"
+    ]
+  },
+  {
+    "file": "valid.json",
+    "issue_type": null
+  },
+  {
+    "file": "bom-valid.json",
+    "issue_type": null
+  },
+  {
+    "file": "valid-cursor.json",
+    "issue_type": null
+  }
+]

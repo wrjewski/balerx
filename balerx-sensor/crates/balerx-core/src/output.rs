@@ -63,10 +63,8 @@ fn generate_html_report(result: &ScanResult) -> String {
                 .suggested_fix
                 .as_ref()
                 .map(|fix| {
-                    format!(
-                        r#"<div class="fix"><strong>Suggested Fix:</strong> {}</div>"#,
-                        html_escape(fix)
-                    )
+                    let body = html_escape(fix).replace('\n', "<br>");
+                    format!(r#"<div class="fix"><strong>Suggested Fix:</strong> {body}</div>"#)
                 })
                 .unwrap_or_default();
 
@@ -87,6 +85,8 @@ fn generate_html_report(result: &ScanResult) -> String {
             )
         })
         .collect();
+
+    let agents_html = render_agents(result);
 
     format!(
         r#"<!DOCTYPE html>
@@ -249,6 +249,7 @@ fn generate_html_report(result: &ScanResult) -> String {
             </div>
         </div>
 
+        {}
         <div class="findings">
             <h2 style="margin-bottom: 1.5rem;">Findings</h2>
             {}
@@ -266,7 +267,31 @@ fn generate_html_report(result: &ScanResult) -> String {
         result.summary.critical_count,
         result.summary.high_count,
         result.summary.medium_count,
+        agents_html,
         findings_html
+    )
+}
+
+fn render_agents(result: &ScanResult) -> String {
+    if result.agents.is_empty() {
+        return String::new();
+    }
+    let mut items = String::new();
+    for agent in &result.agents {
+        items.push_str("<li><strong>");
+        items.push_str(&html_escape(&agent.name));
+        items.push_str("</strong> (");
+        items.push_str(&html_escape(&agent.definition_id));
+        items.push(')');
+        if let Some(note) = &agent.guard_coverage {
+            items.push_str(r#"<p class="detail">Guard coverage: "#);
+            items.push_str(&html_escape(note));
+            items.push_str("</p>");
+        }
+        items.push_str("</li>");
+    }
+    format!(
+        r#"<div class="findings"><h2 style="margin-bottom: 1.5rem;">Agents</h2><ul>{items}</ul></div>"#
     )
 }
 

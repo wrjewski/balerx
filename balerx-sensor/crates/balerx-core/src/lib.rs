@@ -10,6 +10,7 @@ pub mod log;
 pub mod output;
 pub mod poison;
 pub mod policy;
+pub mod policy_setup;
 pub mod process;
 pub mod rules;
 pub mod secret;

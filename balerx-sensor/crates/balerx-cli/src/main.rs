@@ -15,15 +15,31 @@ use balerx_core::{
     process::ProcessCollector,
     rules::RuleId,
 };
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use std::io::{self, BufRead, Read};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tracing::info;
+
+mod banner;
+mod setup;
+mod uninstall;
+mod update_check;
 
 #[derive(Parser)]
 #[command(name = "balerx")]
 #[command(about = "Balerx Gate - Security scanner for AI coding agents", long_about = None)]
 #[command(version)]
+#[command(after_help = "Common commands:
+  balerx scan
+  balerx setup
+  balerx guard install claude-code
+  balerx guard install cursor
+  balerx guard status
+  balerx uninstall
+  balerx doctor
+  balerx self-update --check
+
+Docs: https://balerxgate.com/docs/cli")]
 struct Cli {
     /// Disable color. Same as setting `NO_COLOR`.
     #[arg(long, global = true)]
@@ -93,6 +109,18 @@ enum Commands {
         command: GuardCommands,
     },
 
+    /// Remove Guard hooks for Claude Code and Cursor. Offline.
+    ///
+    /// Deletes only Balerx hook commands from Claude Code and Cursor. A command matches when it contains `balerx` and `hook` and a token names `balerx` or `balerx.exe` with a separate `hook` argument. Other hooks stay. Empty hook lists left by those commands are removed.
+    /// Without `--purge`, policy files and the activity log stay, and the command says so.
+    /// `--purge` deletes known files only: `policy.yaml`, `policy.yaml.bak` copies, planted canary files in `~/.balerx/canaries`, `canaries.json`, and `logs/activity.jsonl`. Unknown files stay. A directory is removed only when it is empty afterward and its name is `.balerx` or `balerx`. A custom data directory is never removed wholesale.
+    /// The command prints every path and asks before it changes anything.
+    /// `--yes` skips the question. When stdin is not a terminal and `--yes` is absent, nothing is removed.
+    /// Purge stops without deleting anything when the home directory or the data directory is not an absolute path.
+    /// On macOS and Linux, `$HOME/.local/bin/balerx` is removed only when that file is the running binary.
+    /// On Windows, purge deletes known data files and does not delete `balerx.exe`. The command prints the PowerShell that deletes `%LOCALAPPDATA%\balerx` and that folder's user Path entry.
+    Uninstall(uninstall::UninstallArgs),
+
     /// Hook handler (called by agent hooks)
     Hook {
         /// Event type
@@ -136,6 +164,15 @@ enum Commands {
         lockfile: Option<PathBuf>,
     },
 
+    /// Choose a local Guard policy and write ~/.balerx/policy.yaml. Offline.
+    ///
+    /// A terminal shows a checklist. Arrow keys move, space toggles, and enter confirms.
+    /// `--yes` writes the balanced preset. `--preset strict|balanced|minimal` writes that preset.
+    /// When stdin is not a terminal, the balanced preset is written and this command does not prompt.
+    /// `--yes` and `--preset` leave an existing file in place. Pass `--replace` to copy it to `policy.yaml.bak` and write a new file.
+    /// A checklist confirms before it replaces an existing file. The previous file is copied to `policy.yaml.bak`.
+    Setup(setup::SetupArgs),
+
     /// Manage the local Guard policy. Offline unless you explicitly pull.
     Policy {
         #[command(subcommand)]
@@ -152,12 +189,58 @@ enum Commands {
         shell: Shell,
     },
 
-    /// Print the install command for a published release. Does not download or replace this binary.
-    SelfUpdate,
+    /// Print this version.
+    ///
+    /// `--check` makes a single request to the public GitHub releases API.
+    /// Every other command stays offline except `upload` and `policy pull`.
+    /// `balerx --version` and `-V` stay offline and do not accept `--check`.
+    Version {
+        /// Check GitHub for a newer release. Opt-in: nothing is checked unless you ask.
+        ///
+        /// Makes a single request to the public GitHub releases API.
+        /// Every other command stays offline except `upload` and `policy pull`.
+        /// A timeout, rate limit, or missing network prints a message and exits 0.
+        #[arg(long)]
+        check: bool,
+
+        /// Print JSON. With `--check`, include the release comparison. Without it, print this version only.
+        #[arg(long)]
+        json: bool,
+    },
+
+    /// Print the install command.
+    ///
+    /// Without `--check`, this prints the install command and does not download or replace the binary.
+    /// `--check` makes a single request to the public GitHub releases API.
+    /// Every other command stays offline except `upload` and `policy pull`.
+    SelfUpdate {
+        /// Check GitHub for a newer release. Opt-in: nothing is checked unless you ask.
+        ///
+        /// Makes a single request to the public GitHub releases API.
+        /// Every other command stays offline except `upload` and `policy pull`.
+        /// A timeout, rate limit, or missing network prints a message and exits 0.
+        #[arg(long)]
+        check: bool,
+
+        /// Print the check result as JSON. Requires `--check`.
+        #[arg(long, requires = "check")]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand)]
 enum PolicyCommands {
+    /// Same as `balerx setup`.
+    Init(setup::SetupArgs),
+
+    /// Print the active policy. The built-in policy is shown when no file exists.
+    Show,
+
+    /// Open the checklist again, pre-filled from the current policy file.
+    ///
+    /// `--preset` or `--yes` rewrites the file without a terminal. The previous file is copied to `policy.yaml.bak`.
+    Edit(setup::SetupArgs),
+
     /// Fetch the organization policy with an ingest key and write it locally.
     ///
     /// Does not contact the network unless `--api-url` and `--api-key` (or
@@ -183,19 +266,23 @@ enum GuardCommands {
     /// Install guard hooks for an agent
     Install {
         /// Agent type to install hooks for
-        #[arg(value_enum)]
+        #[arg(value_enum, ignore_case = true)]
         agent: CliAgentType,
     },
 
     /// Uninstall guard hooks for an agent
     Uninstall {
         /// Agent type to uninstall hooks for
-        #[arg(value_enum)]
+        #[arg(value_enum, ignore_case = true)]
         agent: CliAgentType,
     },
 
     /// Show whether Guard hooks are installed
-    Status,
+    Status {
+        /// Exit 1 when no hook is installed
+        #[arg(long, visible_alias = "check")]
+        strict: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -247,6 +334,7 @@ enum CanaryCommands {
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum CliAgentType {
+    #[value(alias = "claude_code")]
     ClaudeCode,
     Cursor,
 }
@@ -283,6 +371,22 @@ enum Shell {
     Powershell,
 }
 
+fn lists_agent_values_on_extra_word(error: &clap::Error) -> bool {
+    if error.kind() != clap::error::ErrorKind::UnknownArgument {
+        return false;
+    }
+    let mut saw_guard = false;
+    let mut saw_action = false;
+    for arg in std::env::args().skip(1) {
+        match arg.as_str() {
+            "guard" => saw_guard = true,
+            "install" | "uninstall" => saw_action = true,
+            _ => {}
+        }
+    }
+    saw_guard && saw_action
+}
+
 struct ScanOptions {
     path: Option<PathBuf>,
     format: Option<OutputFormat>,
@@ -295,8 +399,25 @@ struct ScanOptions {
     baseline: Option<PathBuf>,
 }
 
+fn parse_cli() -> Cli {
+    match Cli::try_parse() {
+        Ok(cli) => cli,
+        Err(error) => {
+            if lists_agent_values_on_extra_word(&error) {
+                let rendered = error.to_string();
+                eprint!("{rendered}");
+                if !rendered.to_ascii_lowercase().contains("possible values") {
+                    eprintln!("  [possible values: claude-code, cursor]");
+                }
+                std::process::exit(2);
+            }
+            error.exit();
+        }
+    }
+}
+
 fn main() -> Result<()> {
-    let cli = Cli::parse();
+    let cli = parse_cli();
     let quiet = std::env::args().any(|arg| arg == "-q" || arg == "--quiet");
     let no_color = cli.no_color || terminal::no_color();
     let filter = if quiet {
@@ -346,6 +467,9 @@ fn main() -> Result<()> {
         Commands::Guard { command } => {
             run_guard(&command)?;
         }
+        Commands::Uninstall(args) => {
+            uninstall::run(&args, no_color)?;
+        }
         Commands::Hook { event_type } => {
             run_hook(&event_type)?;
         }
@@ -370,27 +494,36 @@ fn main() -> Result<()> {
                 lockfile.as_ref(),
             )?;
         }
-        Commands::Policy { command } => match command {
-            PolicyCommands::Pull {
-                api_url,
-                api_key,
-                output,
-            } => {
-                run_policy_pull(api_url, api_key, output)?;
-            }
-        },
+        Commands::Setup(args) => {
+            setup::run(&args, no_color, setup::Mode::Create)?;
+        }
+        Commands::Policy { command } => {
+            dispatch_policy(command, no_color)?;
+        }
         Commands::Doctor => {
             run_doctor()?;
         }
         Commands::Completions { shell } => {
             print_completions(shell);
         }
-        Commands::SelfUpdate => {
-            run_self_update();
-        }
+        Commands::Version { check, json } => update_check::run_version(check, json),
+        Commands::SelfUpdate { check, json } => update_check::run_self_update(check, json),
     }
 
     Ok(())
+}
+
+fn dispatch_policy(command: PolicyCommands, no_color: bool) -> Result<()> {
+    match command {
+        PolicyCommands::Init(args) => setup::run(&args, no_color, setup::Mode::Create),
+        PolicyCommands::Show => setup::show(),
+        PolicyCommands::Edit(args) => setup::run(&args, no_color, setup::Mode::Edit),
+        PolicyCommands::Pull {
+            api_url,
+            api_key,
+            output,
+        } => run_policy_pull(api_url, api_key, output),
+    }
 }
 
 // Main scan orchestration: length is acceptable for sequential workflow
@@ -488,7 +621,7 @@ fn run_scan(options: ScanOptions) -> Result<()> {
                 }
 
                 for issue in scan_result.issues {
-                    let (severity, rule_id, fix) = map_config_issue(&issue);
+                    let (severity, rule_id, fix) = map_config_issue(&issue, &config_path);
 
                     let mut finding = Finding::new(
                         rule_id,
@@ -556,23 +689,25 @@ fn run_scan(options: ScanOptions) -> Result<()> {
                 })
             })
         {
-            result.add_finding(
-                Finding::new(
-                    RuleId::HookGapNoGuard,
-                    FindingSeverity::Medium,
-                    format!("Guard hooks are not installed for {}", agent.name),
-                    "This agent has a config file and no Balerx hook entry".to_string(),
-                )
-                .with_agent(&agent.name)
-                .with_resource(
-                    agent
-                        .config_paths
-                        .first()
-                        .map(|path| path.display().to_string())
-                        .unwrap_or_default(),
-                )
-                .with_fix("Run balerx guard install for this agent"),
-            );
+            if let Some(fix) = balerx_core::rules::hook_gap_install_fix(&agent.definition_id) {
+                result.add_finding(
+                    Finding::new(
+                        RuleId::HookGapNoGuard,
+                        FindingSeverity::Medium,
+                        format!("Guard hooks are not installed for {}", agent.name),
+                        "This agent has a config file and no Balerx hook entry".to_string(),
+                    )
+                    .with_agent(&agent.name)
+                    .with_resource(
+                        agent
+                            .config_paths
+                            .first()
+                            .map(|path| path.display().to_string())
+                            .unwrap_or_default(),
+                    )
+                    .with_fix(fix),
+                );
+            }
         }
     }
 
@@ -658,6 +793,10 @@ fn run_scan(options: ScanOptions) -> Result<()> {
 
     info!("Scan complete");
 
+    if !quiet && setup::policy_missing() {
+        eprintln!("{}", setup::POLICY_HINT);
+    }
+
     let code = exit_code(&result, fail_on);
     if code != 0 {
         std::process::exit(code);
@@ -717,64 +856,127 @@ fn secret_rule(location: &str) -> RuleId {
     }
 }
 
-fn map_config_issue(issue: &ConfigIssue) -> (FindingSeverity, RuleId, &'static str) {
+fn map_config_issue(issue: &ConfigIssue, config_path: &Path) -> (FindingSeverity, RuleId, String) {
     match issue.issue_type {
         IssueType::UnpinnedPackage => (
             FindingSeverity::Medium,
             RuleId::McpSupplyUnpinned,
-            "Pin the package to a specific version, for example package@1.2.3",
+            "Pin the package to a specific version, for example package@1.2.3".to_string(),
         ),
         IssueType::LatestTag => (
             FindingSeverity::Medium,
             RuleId::McpSupplyLatest,
-            "Replace @latest with a specific version number",
+            "Replace @latest with a specific version number".to_string(),
         ),
         IssueType::PlainHttp => (
             FindingSeverity::High,
             RuleId::McpRemotePlainHttp,
-            "Use HTTPS instead of plain HTTP for remote connections",
+            "Use HTTPS instead of plain HTTP for remote connections".to_string(),
         ),
         IssueType::BroadFilesystem => (
             FindingSeverity::High,
             RuleId::McpPermBroadFilesystem,
-            "Restrict filesystem access to specific directories needed by the tool",
+            "Restrict filesystem access to specific directories needed by the tool".to_string(),
         ),
         IssueType::NoAuth => (
             FindingSeverity::Medium,
             RuleId::McpRemoteNoAuth,
-            "Add authentication credentials for remote MCP server connections",
+            "Add authentication credentials for remote MCP server connections".to_string(),
         ),
         IssueType::BrokenConfig => (
             FindingSeverity::High,
             RuleId::ConfigInvalid,
-            "Fix the JSON or TOML syntax so the scanner can read the file",
+            "Fix the JSON or TOML syntax so the scanner can read the file".to_string(),
+        ),
+        IssueType::EmptyConfig => (
+            FindingSeverity::Info,
+            RuleId::ConfigInvalid,
+            empty_config_fix(config_path),
         ),
         IssueType::DockerPrivileged | IssueType::RootMount => (
             FindingSeverity::High,
             RuleId::McpPermDocker,
-            "Drop --privileged and host root mounts from the container command",
+            "Drop --privileged and host root mounts from the container command".to_string(),
         ),
         IssueType::AutoApprove => (
             FindingSeverity::High,
             RuleId::AgentAutonomyAutoApprove,
-            "Turn off approval_policy never or an equivalent auto-approve setting",
+            "Turn off approval_policy never or an equivalent auto-approve setting".to_string(),
         ),
         IssueType::DangerousPermissions => (
             FindingSeverity::High,
             RuleId::AgentAutonomyDangerousPermissions,
-            "Remove bypassPermissions, Bash(*), or danger-full-access",
+            "Remove bypassPermissions, Bash(*), or danger-full-access".to_string(),
         ),
         IssueType::ShellExec => (
             FindingSeverity::High,
             RuleId::McpPermShellExec,
-            "Replace the shell command with the specific tool binary",
+            "Replace the shell command with the specific tool binary".to_string(),
         ),
         IssueType::DatabaseAccess => (
             FindingSeverity::Medium,
             RuleId::McpPermDatabase,
-            "Use a read-only role and a database that is not production",
+            "Use a read-only role and a database that is not production".to_string(),
         ),
     }
+}
+
+fn empty_config_fix(path: &Path) -> String {
+    let norm = path
+        .to_string_lossy()
+        .replace('\\', "/")
+        .to_ascii_lowercase();
+    let name = path
+        .file_name()
+        .map(|name| name.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    let body = if extension_is(path, "toml") {
+        "Delete the file or add a [mcp_servers.<name>] entry. An empty table is [mcp_servers]."
+    } else if extension_is(path, "yml") || extension_is(path, "yaml") {
+        yaml_empty_fix(&norm)
+    } else if name == "mcp.json" && vscode_mcp_path(&norm) {
+        r#"Delete the file or add valid contents, for example { "servers": {} } for VS Code mcp.json."#
+    } else if name == "settings.json" && vscode_user_settings(&norm) {
+        "Delete the file or add a VS Code settings object, for example {}."
+    } else if name == "hooks.json" && norm.contains(".cursor/") {
+        r#"Delete the file or add a Cursor hooks file, for example { "version": 1, "hooks": {} }."#
+    } else if name == "settings.json" && norm.contains(".claude/settings.json") {
+        "Delete the file or add a Claude Code settings object, for example {}."
+    } else if name == "settings.json" && norm.contains("zed/settings.json") {
+        r#"Delete the file or add a Zed settings object, for example { "context_servers": {} }."#
+    } else if name == "config.json" && norm.contains("continue") {
+        r#"Delete the file or add a Continue config, for example { "mcpServers": {} }."#
+    } else {
+        r#"Delete the file or add valid contents, for example { "mcpServers": {} } for Cursor, Claude, Windsurf, Cline, Roo, Gemini, or another JSON MCP config."#
+    };
+    format!("{body} Nothing was scanned from this file.")
+}
+
+fn extension_is(path: &Path, ext: &str) -> bool {
+    path.extension()
+        .is_some_and(|value| value.eq_ignore_ascii_case(ext))
+}
+
+fn yaml_empty_fix(norm: &str) -> &'static str {
+    if norm.contains("aider") {
+        "Delete the file or add an Aider YAML config. Aider does not use a JSON mcpServers object."
+    } else if norm.contains("goose") {
+        "Delete the file or add a Goose YAML config. Goose extensions are YAML, not a JSON mcpServers object."
+    } else if norm.contains("continue") {
+        "Delete the file or add a Continue YAML config. An MCP server list, when used, is mcpServers:."
+    } else {
+        "Delete the file or add valid YAML. This file is not a JSON mcpServers object."
+    }
+}
+
+fn vscode_mcp_path(norm: &str) -> bool {
+    norm.contains(".vscode/mcp.json") || norm.contains("code/user/mcp.json")
+}
+
+fn vscode_user_settings(norm: &str) -> bool {
+    norm.contains("code/user/settings.json")
+        && !norm.contains("globalstorage")
+        && !norm.contains("roo-cline")
 }
 
 fn discovered_lockfile() -> Lockfile {
@@ -869,6 +1071,9 @@ fn run_guard(command: &GuardCommands) -> Result<()> {
                 "Activity log: {}",
                 ActivityLog::default_log().path().display()
             );
+            if setup::policy_missing() {
+                eprintln!("{}", setup::POLICY_HINT);
+            }
         }
         GuardCommands::Uninstall { agent } => {
             let agent_type = match agent {
@@ -880,7 +1085,7 @@ fn run_guard(command: &GuardCommands) -> Result<()> {
             installer.uninstall(agent_type)?;
             println!("✓ Guard hooks uninstalled successfully");
         }
-        GuardCommands::Status => {
+        GuardCommands::Status { strict } => {
             let status = installer.status();
             println!(
                 "Claude Code user hooks: {} ({})",
@@ -909,12 +1114,15 @@ fn run_guard(command: &GuardCommands) -> Result<()> {
                 status.cursor_hooks.display()
             );
             let policy_path = policy_path_from_env();
-            let policy = if policy_path.exists() {
-                Policy::from_file(&policy_path).unwrap_or_else(|_| Policy::default_policy())
-            } else {
-                Policy::default_policy()
-            };
-            println!("Policy: {}", policy_path.display());
+            let policy = policy_path
+                .as_ref()
+                .filter(|path| path.exists())
+                .and_then(|path| Policy::from_file(path).ok())
+                .unwrap_or_else(Policy::default_policy);
+            match &policy_path {
+                Some(path) => println!("Policy: {}", path.display()),
+                None => println!("Policy: {}", balerx_core::agent::HOME_REQUIRED),
+            }
             println!(
                 "  fail_open={} timeout_ms={}",
                 policy.global.fail_open, policy.global.timeout_ms
@@ -924,7 +1132,11 @@ fn run_guard(command: &GuardCommands) -> Result<()> {
                 ActivityLog::default_log().path().display()
             );
             if !status.claude_user && !status.claude_project && !status.cursor_user {
-                std::process::exit(1);
+                println!("Not installed — run: balerx guard install claude-code");
+                println!("Not installed — run: balerx guard install cursor");
+                if *strict {
+                    std::process::exit(1);
+                }
             }
         }
     }
@@ -938,11 +1150,11 @@ fn run_hook(event_type: &str) -> Result<()> {
     io::stdin().read_to_string(&mut raw)?;
 
     let policy_path = policy_path_from_env();
-    let policy = if policy_path.exists() {
-        Policy::from_file(&policy_path).unwrap_or_else(|_| Policy::default_policy())
-    } else {
-        Policy::default_policy()
-    };
+    let policy = policy_path
+        .as_ref()
+        .filter(|path| path.exists())
+        .and_then(|path| Policy::from_file(path).ok())
+        .unwrap_or_else(Policy::default_policy);
 
     let elapsed = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
     let parsed = serde_json::from_str::<serde_json::Value>(&raw);
@@ -1077,13 +1289,15 @@ fn run_canary(command: CanaryCommands) -> Result<()> {
                 CliCanaryType::Generic => CanaryType::GenericSecret,
             };
 
-            let location = location.unwrap_or_else(|| {
-                let default_dir = dirs::home_dir()
-                    .unwrap_or_else(|| PathBuf::from("."))
-                    .join(".balerx")
-                    .join("canaries");
-                default_dir.join(canary_type.default_filename())
-            });
+            let location = if let Some(location) = location {
+                location
+            } else {
+                let home = balerx_core::agent::absolute_home_dir()
+                    .context(balerx_core::agent::HOME_REQUIRED)?;
+                home.join(".balerx")
+                    .join("canaries")
+                    .join(canary_type.default_filename())
+            };
 
             let canary = manager.plant(canary_type, &location)?;
             println!("\n✓ Canary ID: {}", canary.id);
@@ -1133,15 +1347,19 @@ fn run_canary(command: CanaryCommands) -> Result<()> {
     Ok(())
 }
 
-fn default_policy_path() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".balerx")
-        .join("policy.yaml")
+fn default_policy_path() -> Result<PathBuf> {
+    let home =
+        balerx_core::agent::absolute_home_dir().context(balerx_core::agent::HOME_REQUIRED)?;
+    Ok(home.join(".balerx").join("policy.yaml"))
 }
 
-fn policy_path_from_env() -> PathBuf {
-    std::env::var_os("BALERX_POLICY").map_or_else(default_policy_path, PathBuf::from)
+fn policy_path_from_env() -> Option<PathBuf> {
+    if let Some(value) = std::env::var_os("BALERX_POLICY") {
+        if !value.is_empty() {
+            return Some(PathBuf::from(value));
+        }
+    }
+    default_policy_path().ok()
 }
 
 fn require_remote_credentials(
@@ -1300,16 +1518,21 @@ fn run_doctor() -> Result<()> {
         data_dir.display(),
         if writable { "writable" } else { "not writable" }
     );
-    let policy_path = policy_path_from_env();
-    println!(
-        "policy: {} ({})",
-        policy_path.display(),
-        if policy_path.is_file() {
-            "present"
-        } else {
-            "built-in default"
-        }
-    );
+    match policy_path_from_env() {
+        Some(policy_path) => println!(
+            "policy: {} ({})",
+            policy_path.display(),
+            if policy_path.is_file() {
+                "present"
+            } else {
+                "built-in default"
+            }
+        ),
+        None => println!(
+            "policy: {} (built-in default)",
+            balerx_core::agent::HOME_REQUIRED
+        ),
+    }
     let status = HookInstaller::new().status();
     println!(
         "guard hooks: claude_user={} claude_project={} cursor={}",
@@ -1326,20 +1549,13 @@ fn run_doctor() -> Result<()> {
     Ok(())
 }
 
-fn run_self_update() {
-    println!("balerx {}", env!("CARGO_PKG_VERSION"));
-    println!("This command does not download or replace the binary.");
-    println!("Install a published release from https://github.com/wrjewski/balerx :");
-    println!(
-        "  curl -fsSL https://raw.githubusercontent.com/wrjewski/balerx/main/install.sh -o install.sh && sh install.sh"
-    );
-    println!("Pin a release with BALERX_VERSION, for example BALERX_VERSION=0.1.4.");
-    println!("SHA256SUMS is checked always. If cosign is on PATH, the script also verifies the keyless Sigstore bundle.");
-}
-
 fn print_completions(shell: Shell) {
-    let commands =
-        "scan lock diff guard hook log canary upload policy doctor completions self-update";
+    let commands = Cli::command()
+        .get_subcommands()
+        .map(clap::Command::get_name)
+        .filter(|name| *name != "help")
+        .collect::<Vec<_>>()
+        .join(" ");
     match shell {
         Shell::Bash => {
             println!("complete -W \"{commands}\" balerx");
@@ -1432,7 +1648,10 @@ fn run_policy_pull(
         .body_mut()
         .read_to_string()
         .context("Failed to read organization policy")?;
-    let path = output.unwrap_or_else(default_policy_path);
+    let path = match output {
+        Some(path) => path,
+        None => default_policy_path()?,
+    };
     install_policy_yaml(&yaml, &path)?;
     println!("Wrote organization policy to {}", path.display());
     Ok(())
@@ -1507,7 +1726,7 @@ fn chrono_millis() -> u128 {
 }
 
 fn attach_fleet(payload: &mut serde_json::Value, lockfile: Option<&PathBuf>) -> Result<()> {
-    let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    let home = balerx_core::agent::home_dir().unwrap_or_else(|| PathBuf::from("."));
     let mut drift = Vec::new();
     let mut mcp_servers = Vec::new();
     if let Some(path) = lockfile {

@@ -114,6 +114,9 @@ pub fn print_scan_result(result: &ScanResult) {
                     println!("      Config: {}", path.display());
                 }
             }
+            if let Some(note) = &agent.guard_coverage {
+                println!("      Guard coverage: {note}");
+            }
         }
         println!();
     }
@@ -152,7 +155,9 @@ fn print_finding(finding: &Finding) {
     if let Some(fix) = &finding.suggested_fix {
         println!("│");
         println!("│  💡 Suggested Fix:");
-        println!("│     {fix}");
+        for line in fix.lines() {
+            println!("│     {line}");
+        }
     }
 
     println!("{}\n", bar('└', '─', '┘'));

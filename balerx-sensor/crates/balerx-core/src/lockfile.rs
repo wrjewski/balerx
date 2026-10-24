@@ -392,7 +392,7 @@ impl Lockfile {
 
 #[must_use]
 pub fn home_relative(path: &Path) -> String {
-    home_relative_from(path, dirs::home_dir().as_deref())
+    home_relative_from(path, crate::agent::home_dir().as_deref())
 }
 
 /// SARIF `uri` for a finding path: cwd-relative when it is inside `cwd`,
@@ -602,7 +602,7 @@ mod tests {
 
     #[test]
     fn test_home_relative_paths_drop_the_machine_name() {
-        let home = dirs::home_dir().expect("home");
+        let home = crate::agent::home_dir().expect("home");
         let path = home.join("proj").join("mcp.json");
         let shown = home_relative(&path);
         assert!(shown.starts_with("~/"));

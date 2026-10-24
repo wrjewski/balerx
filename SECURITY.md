@@ -19,6 +19,8 @@ We will acknowledge a report, investigate, and coordinate a fix and a release no
 ## Scanner expectations
 
 - `balerx scan` does not start MCP servers and does not upload results.
+- `balerx setup`, `balerx policy show`, and `balerx policy edit` stay on the machine.
 - `balerx upload` and `balerx policy pull` require an explicit API URL and API key.
+- `balerx version --check` and `balerx self-update --check` send one HTTPS GET to the public GitHub releases API. They run only when `--check` is set and send no account or machine data.
 - Secret values are redacted in findings.
 - Files under `balerx-sensor/tests/fixtures/` and the strings planted by `balerx canary` are fake.

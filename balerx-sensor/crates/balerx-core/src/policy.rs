@@ -321,6 +321,14 @@ fn path_matches(pattern: &str, resource: &str) -> bool {
     if glob::Pattern::new(pattern).is_ok_and(|compiled| compiled.matches(&resource)) {
         return true;
     }
+    if let Some(suffix) = pattern.strip_prefix("**/") {
+        if !suffix.contains('*')
+            && !suffix.contains('?')
+            && (resource == suffix || resource.ends_with(&format!("/{suffix}")))
+        {
+            return true;
+        }
+    }
     let name = resource.rsplit('/').next().unwrap_or(resource.as_str());
     if pattern.contains(".env") && (name == ".env" || name.starts_with(".env.")) {
         return true;

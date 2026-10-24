@@ -11,7 +11,7 @@ The scanner does not start MCP servers. It does not read your prompts. A normal 
 
 ![balerx scan demo](docs/assets/demo.gif)
 
-The clip is a fake home at `/home/demo`: a Cursor config, a Claude Code config, and an MCP server with a risky setting. `docs/demo.tape` reproduces it with [vhs](https://github.com/charmbracelet/vhs).
+The clip is a fake home at `/home/demo`: a Cursor config, a Claude Code config, and an MCP server with a risky setting. `docs/demo.tape` reproduces it with [vhs](https://github.com/charmbracelet/vhs). The recording shows `balerx 0.1.4`. This tree's `balerx --version` prints `balerx 0.1.5`. The text sample below is the report shape.
 
 ## Privacy
 
@@ -19,15 +19,15 @@ The clip is a fake home at `/home/demo`: a Cursor config, a Claude Code config, 
 
 Prompt text is not collected. Tool-argument capture is off. The activity log is metadata only: time, agent, action, resource path, and the allow or deny decision. `balerx upload` also deletes `tool_args` from each log line before the request. This version has no flag that turns prompt or tool-argument capture on.
 
-Nothing is uploaded unless you run `balerx upload` or `balerx policy pull` with an API URL and an API key.
+Nothing is uploaded unless you run `balerx upload` or `balerx policy pull` with an API URL and an API key. `balerx version --check` and `balerx self-update --check` are the only other network commands. Each sends one HTTPS GET to the public GitHub releases API and includes no account or machine data. They do not run unless you pass `--check`.
 
 ## Install
 
-Supported platforms are Windows, macOS, and Linux. The commands are the same on each. Prebuilt binaries are GitHub Releases. The current scanner version is 0.1.4.
+Supported platforms are Windows, macOS, and Linux. The commands are the same on each. Prebuilt binaries are GitHub Releases. The current scanner version is 0.1.5.
 
 ### Prebuilt binary
 
-`BALERX_REPO` defaults to `wrjewski/balerx`. The scripts download `https://github.com/wrjewski/balerx/releases/latest/download/` and check `SHA256SUMS` before installing. Set `BALERX_VERSION` (for example `0.1.4`) to download that tag instead of the latest release. If `cosign` is on `PATH`, the script also verifies `SHA256SUMS.bundle` (keyless Sigstore). Without `cosign`, the checksum check is the whole verification. If the checksum file is missing, the script prints the `cargo install` command below and exits.
+`BALERX_REPO` defaults to `wrjewski/balerx`. The scripts download `https://github.com/wrjewski/balerx/releases/latest/download/` and check `SHA256SUMS` before installing. Set `BALERX_VERSION` (for example `0.1.5`) to download that tag instead of the latest release. If `cosign` is on `PATH`, the script also verifies `SHA256SUMS.bundle` (keyless Sigstore). Without `cosign`, the checksum check is the whole verification. If the checksum file is missing, the script prints the `cargo install` command below and exits.
 
 Linux or macOS, into `$HOME/.local/bin`:
 
@@ -73,7 +73,15 @@ cargo build --locked --release
 .\target\release\balerx.exe --version
 ```
 
-`balerx 0.1.4` is the expected first line. Add `target/release` to your `PATH`, or copy the binary to a directory already on `PATH`.
+`balerx 0.1.5` is the expected first line. Add `target/release` to your `PATH`, or copy the binary to a directory already on `PATH`.
+
+`balerx setup` and `balerx policy init` print a banner before the checklist. A color terminal at least 70 columns wide shows the dragon mark and a BALERX GATE wordmark. A narrower terminal prints one line. `NO_COLOR`, `--no-color`, and a pipe print this plain text. `balerx scan`, `balerx hook`, `--help`, and `--version` leave the banner out. The installers print the same banner on the Installed screen.
+
+```text
+Balerx Gate
+Security for AI agents
+v0.1.5
+```
 
 ## Quick start
 
@@ -134,6 +142,8 @@ FINDINGS:
 
 Each finding is a box. The first line is the severity, the title, and the rule code in parentheses. `Agent` is the discovered product. `Resource` is the config file. The suggested fix is the next edit to make.
 
+That printout is one Cursor config, so it has no Guard coverage line. A scan that also finds VS Code with GitHub Copilot or Codex CLI adds a line under that agent: `Guard hooks are not available for VS Code with GitHub Copilot yet, so its tool calls aren't intercepted. The scan still checks its config.` The line is not a finding. When `~/.balerx/policy.yaml` is missing, stderr includes `No policy set yet. Run: balerx setup`. HOOK-GAP-001 suggests `Run: balerx guard install claude-code` or `Run: balerx guard install cursor`, plus `More: https://balerxgate.com/docs/guard`. An empty config is info: `Configuration file is empty`. The suggested contents follow the file: `{ "servers": {} }` for VS Code `mcp.json`, `{ "mcpServers": {} }` for Cursor, Claude, Windsurf, Cline, Roo, and Gemini JSON, and `[mcp_servers]` for Codex TOML.
+
 The risk label is a score band, not the exit code. Bands are 0–25 low, 26–50 medium, 51–75 high, and 76–100 critical. The sample scores 14 (low) and still exits 1, because exit codes follow the highest finding severity.
 
 Write files at the same time:
@@ -149,7 +159,7 @@ balerx scan --json scan.json --sarif scan.sarif --html report.html
 | Code | When |
 | --- | --- |
 | 0 | No critical or high finding. `balerx diff` also returns 0 when the lockfile matches. `balerx canary check` returns 0 when the path is not a planted canary. |
-| 1 | At least one high finding, or `balerx diff` found drift, or the command failed (missing lockfile, missing file, missing API URL). `balerx canary check` returns 1 when the file is missing. `balerx guard status` returns 1 when no hook is installed. |
+| 1 | At least one high finding, or `balerx diff` found drift, or the command failed (missing lockfile, missing file, missing API URL). `balerx canary check` returns 1 when the file is missing. `balerx guard status` returns 0 when no hook is installed and prints the install command. `balerx guard status --strict` (alias `--check`) returns 1 in that case, for a CI script. |
 | 2 | At least one critical finding. Critical wins over high. `balerx canary check` returns 2 when the path is a planted canary. A Claude Code deny also exits 2. |
 
 Medium, low, and info findings stay on exit code 0 unless you pass `--fail-on`. `--fail-on critical|high|medium|low|info` exits 1 when any finding is at or above that severity. These default codes were checked with `balerx scan` against a medium-only config (0), a plain-HTTP config (1), and a config containing an access-key-shaped value (2).
@@ -172,13 +182,17 @@ Flags below are the ones `balerx <command> --help` prints. `-h` and `--help` exi
 | `balerx scan --baseline <FILE>` | Hide findings listed in a JSON file: `{"ignore":[{"rule_id":"MCP-REMOTE-001","resource":".cursor/mcp.json"}]}`. `rule_id` is the rule code. |
 | `balerx doctor` | Print the version, data directory, Guard hook state, and policy path. Offline. Exits 0 when the data directory is usable. |
 | `balerx completions <SHELL>` | Print a completion script for `bash`, `zsh`, `fish`, or `powershell`. |
+| `balerx version` | Print the version. `balerx --version` and `-V` do the same and stay offline. |
+| `balerx version --check` | Compare this version with the latest stable GitHub release. One request. Off unless you pass `--check`. `--json` prints the result. |
 | `balerx self-update` | Print the current version and the public install command. It does not download or replace the binary. |
+| `balerx self-update --check` | Same release check as `balerx version --check`. `--json` requires `--check`. |
 | `balerx lock` | Write `balerx.lock` in the current directory. MCP servers, a config content hash, and home-relative paths are recorded. The hostname is omitted. |
 | `balerx lock -o, --output <PATH>` | Write the lockfile somewhere else. |
 | `balerx diff` | Compare the current machine with `balerx.lock`, including MCP servers that were added, removed, or changed. |
 | `balerx diff -l, --lockfile <PATH>` | Compare against another lockfile. |
 | `balerx guard install <AGENT>` | Merge local hooks. `<AGENT>` is `claude-code` (`~/.claude/settings.json`) or `cursor` (`~/.cursor/hooks.json`). Existing hooks stay. |
-| `balerx guard uninstall <AGENT>` | Remove only Balerx hook commands. Other hooks stay. No backup is restored. |
+| `balerx guard uninstall <AGENT>` | Remove only Balerx hook commands for one agent. Other hooks stay. No backup is restored. |
+| `balerx uninstall` | Remove Balerx hook commands from Claude Code and Cursor. A command matches when it runs the `balerx` binary, or `balerx.exe`, with a `hook` argument. `my-balerx-webhook.sh` stays. Asks first. `--yes` skips the question. A pipe without `--yes` changes nothing. Without `--purge`, policy and logs stay. `--purge` deletes known policy files and `logs/activity.jsonl`. Unknown files stay. A custom data directory is not removed. Offline. |
 | `balerx guard status` | Show install state, `fail_open`, `timeout_ms`, and the log path. |
 | `balerx hook --event-type <EVENT_TYPE>` | Read one JSON event on stdin and print the agent's native decision (`permissionDecision` for Claude Code, `permission` for Cursor), including `ask`. Agents call this. |
 | `balerx log view` | Show the local activity log. Default `--limit` is 50. |
@@ -194,6 +208,10 @@ Flags below are the ones `balerx <command> --help` prints. `-h` and `--help` exi
 | `balerx upload --scan <FILE>` | Upload findings JSON from `balerx scan --json`. |
 | `balerx upload --activity-log <FILE>` | Upload a Guard JSONL log. Tool arguments are removed first. |
 | `balerx upload --lockfile <FILE>` | Attach lockfile drift to the scan upload. |
+| `balerx setup` | Print the Balerx Gate banner, then write `~/.balerx/policy.yaml` from a checklist. Offline. `--yes` uses the balanced preset. `--preset strict\|balanced\|minimal` selects one. An existing file requires `--replace`, which copies it to `policy.yaml.bak` first. |
+| `balerx policy init` | Same as `balerx setup`. |
+| `balerx policy show` | Print the active policy. A missing file prints the built-in policy. |
+| `balerx policy edit` | Open the checklist pre-filled from the current file. |
 | `balerx policy pull --api-url <URL> --api-key <KEY>` | Download the organization policy. |
 | `balerx policy pull --output <PATH>` | Write the policy somewhere other than `~/.balerx/policy.yaml`. |
 
@@ -221,7 +239,7 @@ balerx upload --scan scan.json
 
 A successful scan upload prints `Uploaded scan scan.json`. A successful activity upload prints `Uploaded N activity events from <path>`. A successful policy pull prints `Wrote organization policy to <path>`. A rejected request prints `Upload failed:` or `Policy pull failed:` and exits 1.
 
-The local Guard policy lives at `~/.balerx/policy.yaml` (your user profile on Windows). Until you pull one, Guard uses a built-in policy. There is no separate scanner config file.
+The local Guard policy lives at `~/.balerx/policy.yaml` (your user profile on Windows). `balerx setup` writes it. Until that file exists, Guard uses a built-in policy. There is no separate scanner config file.
 
 ## CI
 
@@ -251,7 +269,7 @@ jobs:
           sarif-file: balerx.sarif
 ```
 
-`version` pins a release (`0.1.4`). Leave it empty to use the latest release. The action lives at `.github/actions/scan` in this repository.
+`version` pins a release (`0.1.5`). Leave it empty to use the latest release. The action lives at `.github/actions/scan` in this repository.
 
 ## Agents and rules
 
@@ -293,9 +311,9 @@ jobs:
 | `TOOL-POISON-001` | `ToolPoisonHiddenInstructions` | critical, high, or medium | hidden instruction text in the scan directory |
 | `TOOL-POISON-002` | `ToolPoisonExfiltration` | critical, high, or medium | a "Data Exfiltration" instruction pattern |
 | `HOOK-GAP-001` | `HookGapNoGuard` | medium | Claude Code or Cursor has a config file and no Balerx hook command in it |
-| `CONFIG-001` | `ConfigInvalid` | high | a discovered config file is not valid JSON or TOML |
+| `CONFIG-001` | `ConfigInvalid` | info or high | an empty, whitespace-only, or BOM-only file is info. Invalid JSON or TOML is high and includes the parser line and column |
 
-`MCP-SUPPLY-003`, `MCP-SUPPLY-004`, and `HOOK-GAP-002` are planned. This version of `balerx scan` does not emit them. Duplicate findings with the same rule, resource, title, and evidence are collapsed. The risk label is CRITICAL when there is a critical finding or the score is above 75, HIGH when there are 3 or more high findings or the score is above 50, MEDIUM when any high or medium finding remains or the score is above 25, and LOW otherwise. Three high findings are HIGH even though 3 × 10 is 30.
+`MCP-SUPPLY-003`, `MCP-SUPPLY-004`, and `HOOK-GAP-002` are planned. This version of `balerx scan` does not emit them. An agent other than Claude Code or Cursor gets a Guard coverage line. The line says Guard hooks are not available for that agent yet and that the scan still checks its config. It is separate from findings and leaves the risk score unchanged. Duplicate findings with the same rule, resource, title, and evidence are collapsed. The risk label is CRITICAL when there is a critical finding or the score is above 75, HIGH when there are 3 or more high findings or the score is above 50, MEDIUM when any high or medium finding remains or the score is above 25, and LOW otherwise. Three high findings are HIGH even though 3 × 10 is 30.
 
 Guard's built-in policy, used when `~/.balerx/policy.yaml` is missing:
 
@@ -334,7 +352,7 @@ The activity log is `activity.jsonl` under the OS local data directory:
 
 **Windows SmartScreen.** Release binaries are not Authenticode-signed. `SHA256SUMS` is signed with keyless Sigstore. Windows may say it protected your PC. Choose More info, then Run anyway, or build from source with `cargo build --locked --release` and run `target\release\balerx.exe`.
 
-**Proxy.** `balerx scan` does not use the network. `balerx upload` and `balerx policy pull` use the first of `ALL_PROXY`, `HTTPS_PROXY`, and `HTTP_PROXY` (lowercase names work too). `NO_PROXY` skips matching hosts. The Windows system proxy setting is not read. A proxy that refuses the connection fails the command with `Upload failed:` or `Policy pull failed:`.
+**Proxy.** `balerx scan`, `setup`, `uninstall`, `policy show`, `policy edit`, `doctor`, `completions`, and `self-update` without `--check` do not use the network. `balerx upload` and `balerx policy pull` use the first of `ALL_PROXY`, `HTTPS_PROXY`, and `HTTP_PROXY` (lowercase names work too). `version --check` and `self-update --check` use those same variables for one request to `api.github.com`. `NO_PROXY` skips matching hosts. The Windows system proxy setting is not read. A proxy that refuses an upload or policy pull fails that command with `Upload failed:` or `Policy pull failed:`. A refused proxy on the update check prints a message and exits 0.
 
 **`install.sh` says there is no release.** The checksum download failed. Build from source with the `cargo install` command above.
 
@@ -343,13 +361,27 @@ The activity log is `activity.jsonl` under the OS local data directory:
 ## Uninstall
 
 ```bash
-balerx guard uninstall claude-code
-balerx guard uninstall cursor
-rm -f "$HOME/.local/bin/balerx"
-rm -rf "$HOME/.balerx" "$HOME/.local/share/balerx"
+balerx uninstall
+balerx uninstall --yes
+balerx uninstall --purge --yes
 ```
 
-On macOS, also remove `~/Library/Application Support/balerx`. On Windows, uninstall the hooks with `balerx.exe guard uninstall`, then delete `%LOCALAPPDATA%\balerx` and `%USERPROFILE%\.balerx`. A source build is removed by deleting the `target` directory or the copied `balerx.exe`.
+`balerx uninstall` removes Balerx hook commands from Claude Code (`~/.claude/settings.json` and a project `.claude/settings.json`) and Cursor (`~/.cursor/hooks.json`). A command matches when it contains `balerx` and `hook` and it runs the `balerx` binary, or `balerx.exe`, with a separate `hook` argument. `my-balerx-webhook.sh` stays. Empty hook lists left behind are removed. The command prints every path, then asks. `--yes` skips the question. A pipe without `--yes` changes nothing and prints `Run: balerx uninstall --yes`.
+
+Without `--purge`, `~/.balerx` and the activity log stay. The command says `Policy and logs stay. Pass --purge to delete them.` `--purge` deletes known files only: `policy.yaml`, `policy.yaml.bak` copies, planted canary files in `~/.balerx/canaries`, `canaries.json`, and `logs/activity.jsonl`. Unknown files stay, and the command lists them. A directory is removed only when it is empty afterward and its name is `.balerx` or `balerx`. A custom `BALERX_DATA_DIR` is never removed wholesale. Purge does nothing and exits nonzero when the home directory or the data directory is not an absolute path. Symlinks are left in place. The data directory is `~/.local/share/balerx` on Linux, `~/Library/Application Support/balerx` on macOS, and `%LOCALAPPDATA%\balerx` on Windows, unless `BALERX_DATA_DIR` is set.
+
+On macOS and Linux, `$HOME/.local/bin/balerx` is removed only when that file is the running binary. A different copy is left in place. On Windows, purge deletes known data files and does not delete the running `balerx.exe`. It prints:
+
+```powershell
+Remove-Item -Recurse -Force "$env:LOCALAPPDATA\balerx"
+$dest = Join-Path $env:LOCALAPPDATA 'balerx'
+$userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+$kept = @($userPath -split ';' | Where-Object { $_.Trim().TrimEnd('\') -ne $dest }) -join ';'
+[Environment]::SetEnvironmentVariable('Path', $kept, 'User')
+$env:Path = @($env:Path -split ';' | Where-Object { $_.Trim().TrimEnd('\') -ne $dest }) -join ';'
+```
+
+`balerx guard uninstall claude-code` and `balerx guard uninstall cursor` still remove one agent's hooks and do not ask, and they do not touch policy, logs, or the binary. The command stays offline.
 
 ## Contributing
 

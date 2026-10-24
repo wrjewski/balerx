@@ -23,6 +23,11 @@ tracing-subscriber.workspace = true
 dirs.workspace = true
 ureq.workspace = true
 hostname.workspace = true
+dialoguer.workspace = true
+terminal_size.workspace = true
+
+[dev-dependencies]
+serde_yaml.workspace = true
 
 [lints]
 workspace = true

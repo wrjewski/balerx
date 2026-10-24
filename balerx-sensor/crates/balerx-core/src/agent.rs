@@ -55,6 +55,10 @@ pub struct Agent {
     pub config_paths: Vec<PathBuf>,
     pub status: AgentStatus,
     pub process_id: Option<u32>,
+    /// Set when Guard cannot intercept this agent's tool calls.
+    /// Absent for Claude Code and Cursor. This is not a finding.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guard_coverage: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -64,6 +68,43 @@ pub enum AgentStatus {
     Running,
     Configured,
     NotConfigured,
+}
+
+/// Printed when install, policy, or uninstall cannot use the profile directory.
+pub const HOME_REQUIRED: &str =
+    "Home directory is not an absolute path. Set HOME or USERPROFILE to an absolute path.";
+
+/// Profile directory. `HOME` and `USERPROFILE` win so a relocated profile is honored
+/// on every OS. The platform folder is the fallback. Install, policy, and uninstall
+/// all use this function.
+#[must_use]
+pub fn home_dir() -> Option<PathBuf> {
+    home_dir_from(
+        std::env::var_os("HOME"),
+        std::env::var_os("USERPROFILE"),
+        dirs::home_dir(),
+    )
+}
+
+/// Same order as [`home_dir`], with the platform folder passed in.
+#[must_use]
+pub fn home_dir_from(
+    home: Option<std::ffi::OsString>,
+    user_profile: Option<std::ffi::OsString>,
+    fallback: Option<PathBuf>,
+) -> Option<PathBuf> {
+    for value in [home, user_profile].into_iter().flatten() {
+        if !value.is_empty() {
+            return Some(PathBuf::from(value));
+        }
+    }
+    fallback.filter(|path| !path.as_os_str().is_empty())
+}
+
+/// [`home_dir`] when the path is absolute. Relative values and a missing profile are `None`.
+#[must_use]
+pub fn absolute_home_dir() -> Option<PathBuf> {
+    home_dir().filter(|path| path.is_absolute())
 }
 
 impl AgentDefinition {
@@ -443,7 +484,7 @@ impl AgentDefinition {
     pub fn expand_path(&self, path_str: &str) -> Option<PathBuf> {
         let path_str = if path_str.starts_with('~') {
             {
-                let home = dirs::home_dir()?;
+                let home = home_dir()?;
                 path_str.replacen('~', &home.to_string_lossy(), 1)
             }
         } else if cfg!(windows) && path_str.contains("%APPDATA%") {
@@ -477,5 +518,36 @@ impl AgentDefinition {
                 .unwrap_or_default();
         }
         vec![expanded]
+    }
+}
+
+#[cfg(test)]
+mod home_tests {
+    use super::*;
+
+    #[test]
+    fn home_dir_prefers_home_then_userprofile_then_fallback() {
+        let fallback = PathBuf::from("/passwd");
+        assert_eq!(
+            home_dir_from(
+                Some("/from-home".into()),
+                Some("/from-profile".into()),
+                Some(fallback.clone())
+            ),
+            Some(PathBuf::from("/from-home"))
+        );
+        assert_eq!(
+            home_dir_from(None, Some("/from-profile".into()), Some(fallback.clone())),
+            Some(PathBuf::from("/from-profile"))
+        );
+        assert_eq!(
+            home_dir_from(Some("".into()), Some("".into()), Some(fallback.clone())),
+            Some(PathBuf::from("/passwd"))
+        );
+        assert_eq!(
+            home_dir_from(Some("relative".into()), None, Some(fallback)),
+            Some(PathBuf::from("relative"))
+        );
+        assert!(home_dir_from(None, None, None).is_none());
     }
 }

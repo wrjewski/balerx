@@ -6,7 +6,7 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
 rust-version = "1.75"
 license = "Apache-2.0"
@@ -53,6 +53,9 @@ dirs = "5.0"
 hostname = "0.4"
 # 3.2 keeps rustls with webpki-roots 1.x (RUSTSEC-2026-0381) and rustc 1.71.
 ureq = { version = "=3.2.1", default-features = false, features = ["rustls", "json", "gzip"] }
+dialoguer = { version = "=0.11.0", default-features = false }
+# Safe terminal width. Unix uses rustix; Windows uses windows-sys, already in the lockfile.
+terminal_size = "=0.4.4"
 
 [workspace.lints.rust]
 unsafe_code = "warn"
