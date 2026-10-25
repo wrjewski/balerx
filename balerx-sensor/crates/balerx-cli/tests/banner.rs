@@ -40,7 +40,7 @@ fn setup_and_policy_init_print_the_banner_and_scans_do_not() {
     let setup_out = stdout_of(&setup);
     assert!(setup.status.success(), "{setup_out}");
     assert!(setup_out.contains("Security for AI agents"), "{setup_out}");
-    assert!(setup_out.contains("v0.1.7"), "{setup_out}");
+    assert!(setup_out.contains("v0.1.8"), "{setup_out}");
     assert!(setup_out.contains("Balerx Gate"), "{setup_out}");
     assert!(!setup_out.contains('\u{1b}'), "{setup_out}");
     assert!(setup_out.contains("No terminal attached. Wrote the balanced policy."));
@@ -65,7 +65,7 @@ fn setup_and_policy_init_print_the_banner_and_scans_do_not() {
     assert!(narrow.status.success(), "{narrow_out}");
     assert_eq!(
         narrow_out.lines().next(),
-        Some(">< Balerx Gate  v0.1.7"),
+        Some(">< Balerx Gate  v0.1.8"),
         "{narrow_out}"
     );
     assert!(

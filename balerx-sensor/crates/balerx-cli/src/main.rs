@@ -222,9 +222,11 @@ enum Commands {
         json: bool,
     },
 
-    /// Print the install command.
+    /// Print the install command for this OS.
     ///
     /// Without `--check`, this prints the install command and does not download or replace the binary.
+    /// Windows prints the PowerShell installer with `-ExecutionPolicy Bypass` for that one process.
+    /// macOS and Linux print curl and sh.
     /// `--check` makes a single request to the public GitHub releases API.
     /// Every other command stays offline except `upload` and `policy pull`.
     SelfUpdate {
