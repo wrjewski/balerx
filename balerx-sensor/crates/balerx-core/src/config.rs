@@ -1,3 +1,4 @@
+use crate::redaction::redact_url;
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -316,23 +317,26 @@ fn server_issues(name: &str, server: &McpServer) -> Vec<ConfigIssue> {
     if let Some(command) = &server.command {
         if let Some(package) = package_spec(command, &args) {
             match package.pin {
-                PinState::Unpinned => issues.push(ConfigIssue {
-                    server_name: name.to_string(),
-                    issue_type: IssueType::UnpinnedPackage,
-                    description: format!(
-                        "MCP server '{name}' uses unpinned package: {}",
-                        package.name
-                    ),
-                    resource: package.name,
-                    line: None,
-                }),
-                PinState::Latest => issues.push(ConfigIssue {
-                    server_name: name.to_string(),
-                    issue_type: IssueType::LatestTag,
-                    description: format!("MCP server '{name}' uses a latest tag: {}", package.name),
-                    resource: package.name,
-                    line: None,
-                }),
+                PinState::Unpinned => {
+                    let shown = redact_url(&package.name);
+                    issues.push(ConfigIssue {
+                        server_name: name.to_string(),
+                        issue_type: IssueType::UnpinnedPackage,
+                        description: format!("MCP server '{name}' uses unpinned package: {shown}"),
+                        resource: shown,
+                        line: None,
+                    });
+                }
+                PinState::Latest => {
+                    let shown = redact_url(&package.name);
+                    issues.push(ConfigIssue {
+                        server_name: name.to_string(),
+                        issue_type: IssueType::LatestTag,
+                        description: format!("MCP server '{name}' uses a latest tag: {shown}"),
+                        resource: shown,
+                        line: None,
+                    });
+                }
                 PinState::Pinned => {}
             }
         }
@@ -358,13 +362,14 @@ fn server_issues(name: &str, server: &McpServer) -> Vec<ConfigIssue> {
             issues.push(remote_http_issue(name, &target));
         }
         if is_remote_url(url) && !server_has_auth(server) {
+            let redacted = redact_url(url);
             issues.push(ConfigIssue {
                 server_name: name.to_string(),
                 issue_type: IssueType::NoAuth,
                 description: format!(
                     "MCP server '{name}' is a remote endpoint with no auth configured"
                 ),
-                resource: url.clone(),
+                resource: redacted,
                 line: None,
             });
         }
@@ -387,21 +392,23 @@ fn server_issues(name: &str, server: &McpServer) -> Vec<ConfigIssue> {
 }
 
 fn remote_http_issue(name: &str, url: &str) -> ConfigIssue {
+    let redacted = redact_url(url);
     ConfigIssue {
         server_name: name.to_string(),
         issue_type: IssueType::PlainHttp,
-        description: format!("MCP server '{name}' uses plain HTTP: {url}"),
-        resource: url.to_string(),
+        description: format!("MCP server '{name}' uses plain HTTP: {redacted}"),
+        resource: redacted,
         line: None,
     }
 }
 
 fn database_issue(name: &str, resource: &str) -> ConfigIssue {
+    let redacted = redact_url(resource);
     ConfigIssue {
         server_name: name.to_string(),
         issue_type: IssueType::DatabaseAccess,
-        description: format!("MCP server '{name}' can reach a database: {resource}"),
-        resource: resource.to_string(),
+        description: format!("MCP server '{name}' can reach a database: {redacted}"),
+        resource: redacted,
         line: None,
     }
 }
@@ -520,6 +527,9 @@ fn split_name_version(tool: &str, spec: &str) -> (String, String) {
 }
 
 fn package_version<'a>(tool: &str, spec: &'a str) -> Option<&'a str> {
+    if spec.contains("://") {
+        return None;
+    }
     match tool {
         "uvx" | "uv" | "pip" | "pip3" => spec
             .split_once("==")
@@ -898,5 +908,40 @@ mod tests {
             .expect("package");
         assert_eq!(identity.name, "@scope/pkg");
         assert_eq!(identity.version, "1.2.3");
+    }
+
+    #[test]
+    fn url_package_spec_is_not_split_at_colon_or_at() {
+        let user = "tuser";
+        let pw = "Tp1";
+        let at_host = String::from("@") + "host.example.com/pkg.tgz?token=Tk1";
+        let spec = format!("https://{user}:{pw}{at_host}");
+        let identity = package_identity("npx", &["-y".to_string(), spec.clone()]).expect("package");
+        assert_eq!(identity.name, spec);
+        assert_eq!(identity.version, "");
+    }
+
+    #[test]
+    fn unpinned_url_package_finding_redacts_userinfo() {
+        let user = "guser";
+        let pw = "Gp1";
+        let at_host = String::from("@") + "github.com/o/r.git";
+        let spec = format!("git+https://{user}:{pw}{at_host}");
+        let config = crate::config::McpConfig::from_json(&serde_json::json!({
+            "mcpServers": {
+                "git-pkg": {
+                    "command": "npx",
+                    "args": [spec]
+                }
+            }
+        }));
+        let issues = config.find_issues();
+        let unpinned = issues
+            .iter()
+            .find(|issue| issue.issue_type == crate::config::IssueType::UnpinnedPackage)
+            .expect("unpinned");
+        assert!(!unpinned.description.contains(pw));
+        assert!(!unpinned.resource.contains(pw));
+        assert!(unpinned.resource.contains("github.com/o/r.git"));
     }
 }

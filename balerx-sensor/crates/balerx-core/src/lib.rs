@@ -12,6 +12,7 @@ pub mod poison;
 pub mod policy;
 pub mod policy_setup;
 pub mod process;
+pub mod redaction;
 pub mod rules;
 pub mod secret;
 

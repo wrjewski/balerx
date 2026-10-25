@@ -1,8 +1,13 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
+use std::cell::RefCell;
 use std::fs;
 use std::path::{Path, PathBuf};
+
+thread_local! {
+    static HOOK_BINARY_OVERRIDE: RefCell<Option<String>> = const { RefCell::new(None) };
+}
 
 #[derive(Debug, Clone)]
 pub struct HookInstaller {
@@ -157,15 +162,107 @@ impl Default for HookInstaller {
 
 #[must_use]
 pub fn hook_command() -> String {
+    if let Some(overridden) = HOOK_BINARY_OVERRIDE.with(|slot| slot.borrow().clone()) {
+        return overridden;
+    }
     std::env::current_exe()
         .ok()
         .and_then(|path| path.to_str().map(ToOwned::to_owned))
         .unwrap_or_else(|| "balerx".to_string())
 }
 
+/// Shell-quote a path for use in a hook command.
+/// Windows-shaped paths (drive letter or UNC) use PowerShell quoting.
+/// Other paths use POSIX single quotes. A POSIX path that contains a
+/// backslash is not treated as a Windows path.
+#[must_use]
+pub fn shell_quote(path: &str) -> String {
+    quote_path(path, is_windows_path_shape(path))
+}
+
+#[must_use]
+pub fn quote_path(path: &str, windows: bool) -> String {
+    if windows {
+        powershell_quote(path)
+    } else {
+        posix_quote(path)
+    }
+}
+
+fn posix_needs_quoting(path: &str) -> bool {
+    path.is_empty()
+        || path.chars().any(|ch| {
+            matches!(
+                ch,
+                ' ' | '\t'
+                    | '\n'
+                    | '\''
+                    | '"'
+                    | '\\'
+                    | '$'
+                    | '`'
+                    | '!'
+                    | '*'
+                    | '?'
+                    | '['
+                    | ']'
+                    | '('
+                    | ')'
+                    | '{'
+                    | '}'
+                    | ';'
+                    | '&'
+                    | '|'
+                    | '<'
+                    | '>'
+                    | '#'
+                    | '~'
+            )
+        })
+}
+
+fn posix_quote(path: &str) -> String {
+    if !posix_needs_quoting(path) {
+        return path.to_string();
+    }
+    let mut result = String::from("'");
+    for ch in path.chars() {
+        if ch == '\'' {
+            result.push_str("'\\''");
+        } else {
+            result.push(ch);
+        }
+    }
+    result.push('\'');
+    result
+}
+
+fn powershell_quote(path: &str) -> String {
+    let escaped = path
+        .replace('`', "``")
+        .replace('$', "`$")
+        .replace('"', "\"\"");
+    format!("\"{escaped}\"")
+}
+
+/// Builds the hook command for the running binary on this OS.
 #[must_use]
 pub fn balerx_hook_command(event_type: &str) -> String {
-    format!("{} hook --event-type {event_type}", hook_command())
+    format_hook_command(&hook_command(), event_type, cfg!(windows))
+}
+
+/// Builds a hook command for `binary`. When `windows` is true the command
+/// is always `& "path"` so PowerShell can invoke it.
+#[must_use]
+pub fn format_hook_command(binary: &str, event_type: &str, windows: bool) -> String {
+    let quoted = quote_path(binary, windows);
+    if windows {
+        format!("& {quoted} hook --event-type {event_type}")
+    } else if quoted != binary {
+        format!("{quoted} hook --event-type {event_type}")
+    } else {
+        format!("{binary} hook --event-type {event_type}")
+    }
 }
 
 /// A Balerx hook command contains `balerx` and `hook`, and it invokes the
@@ -188,17 +285,34 @@ pub fn is_balerx_hook_command(command: &str) -> bool {
 fn command_tokens(command: &str) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut current = String::new();
+    let mut chars = command.chars().peekable();
     let mut quote = None;
-    for ch in command.chars() {
-        match quote {
-            Some(mark) if ch == mark => quote = None,
-            None if ch == '"' || ch == '\'' => quote = Some(ch),
-            None if ch.is_whitespace() => {
+
+    while let Some(ch) = chars.next() {
+        match (quote, ch) {
+            (Some('"'), '"') if chars.peek() == Some(&'"') => {
+                chars.next();
+                current.push('"');
+            }
+            (Some('\''), '\'') if chars.peek() == Some(&'\\') => {
+                chars.next();
+                if chars.peek() == Some(&'\'') {
+                    chars.next();
+                    if chars.peek() == Some(&'\'') {
+                        chars.next();
+                        current.push('\'');
+                    }
+                }
+            }
+            (Some('"'), '"') | (Some('\''), '\'') => quote = None,
+            (None, '"') => quote = Some('"'),
+            (None, '\'') => quote = Some('\''),
+            (None, _) if ch.is_whitespace() => {
                 if !current.is_empty() {
                     tokens.push(std::mem::take(&mut current));
                 }
             }
-            Some(_) | None => current.push(ch),
+            _ => current.push(ch),
         }
     }
     if !current.is_empty() {
@@ -561,7 +675,7 @@ fn push_unique(paths: &mut Vec<PathBuf>, path: PathBuf) {
 fn path_identity(path: &Path) -> String {
     let candidate = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let mut text = strip_verbatim(&candidate.to_string_lossy());
-    if looks_like_windows_path(&text) {
+    if cfg!(windows) || is_windows_path_shape(&text) {
         text = text.replace('/', "\\");
         while text.ends_with('\\') && text.len() > 3 {
             text.pop();
@@ -585,8 +699,157 @@ fn strip_verbatim(text: &str) -> String {
         .map_or_else(|| text.to_string(), ToOwned::to_owned)
 }
 
-fn looks_like_windows_path(text: &str) -> bool {
-    cfg!(windows) || text.contains('\\') || text.as_bytes().get(1) == Some(&b':')
+fn is_windows_path_shape(text: &str) -> bool {
+    let stripped = strip_verbatim(text);
+    let bytes = stripped.as_bytes();
+    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        return true;
+    }
+    stripped.starts_with("\\\\")
+}
+
+/// Path of the hook binary inside a stored hook command, if one is present.
+#[must_use]
+pub fn hook_binary_path_from_command(command: &str) -> Option<String> {
+    command_tokens(command)
+        .into_iter()
+        .find(|token| token != "&" && is_balerx_binary_token(token))
+        .map(|token| {
+            if is_powershell_call_form(command) {
+                unescape_powershell_escapes(&token)
+            } else {
+                token
+            }
+        })
+}
+
+fn is_powershell_call_form(command: &str) -> bool {
+    command.trim_start().starts_with('&')
+}
+
+fn unescape_powershell_escapes(token: &str) -> String {
+    let mut out = String::with_capacity(token.len());
+    let mut chars = token.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '`' {
+            if let Some(next) = chars.next() {
+                out.push(next);
+            }
+        } else {
+            out.push(ch);
+        }
+    }
+    out
+}
+
+/// Checks that a stored hook binary exists and is executable.
+///
+/// # Errors
+///
+/// Returns a user-facing message when the file is missing or not executable.
+pub fn check_hook_binary(path: &str) -> Result<(), String> {
+    let file = Path::new(path);
+    if !path.contains('/') && !path.contains('\\') && !is_windows_path_shape(path) {
+        if which_on_path(path) {
+            return Ok(());
+        }
+        return Err(format!(
+            "Guard hook binary is missing or not executable: {path}"
+        ));
+    }
+    if !file.exists() {
+        return Err(format!("Guard hook binary is missing: {path}"));
+    }
+    if !is_executable_file(file) {
+        return Err(format!("Guard hook binary is not executable: {path}"));
+    }
+    Ok(())
+}
+
+fn is_executable_file(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::metadata(path).is_ok_and(|meta| meta.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
+    {
+        path.is_file()
+    }
+}
+
+fn which_on_path(name: &str) -> bool {
+    let Ok(path_var) = std::env::var("PATH") else {
+        return false;
+    };
+    for dir in std::env::split_paths(&path_var) {
+        let candidate = dir.join(name);
+        if is_executable_file(&candidate) {
+            return true;
+        }
+        #[cfg(windows)]
+        {
+            let exe = dir.join(format!("{name}.exe"));
+            if is_executable_file(&exe) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Collects problems with installed hook binary paths.
+#[must_use]
+pub fn hook_binary_issues(home: &Path) -> Vec<String> {
+    let mut issues = Vec::new();
+    let mut files = vec![
+        home.join(".claude").join("settings.json"),
+        home.join(".cursor").join("hooks.json"),
+    ];
+    if let Ok(cwd) = std::env::current_dir() {
+        files.push(cwd.join(".claude").join("settings.json"));
+    }
+    for file in files {
+        let Ok(text) = fs::read_to_string(&file) else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<Value>(&text) else {
+            continue;
+        };
+        let mut commands = Vec::new();
+        collect_hook_commands(&value, &mut commands);
+        for command in commands {
+            if let Some(binary) = hook_binary_path_from_command(&command) {
+                if let Err(message) = check_hook_binary(&binary) {
+                    if !issues.contains(&message) {
+                        issues.push(message);
+                    }
+                }
+            }
+        }
+    }
+    issues
+}
+
+fn collect_hook_commands(value: &Value, out: &mut Vec<String>) {
+    match value {
+        Value::Object(map) => {
+            if let Some(Value::String(command)) = map.get("command") {
+                if is_balerx_hook_command(command) {
+                    out.push(command.clone());
+                }
+            }
+            for nested in map.values() {
+                collect_hook_commands(nested, out);
+            }
+        }
+        Value::Array(items) => {
+            for nested in items {
+                collect_hook_commands(nested, out);
+            }
+        }
+        _ => {}
+    }
 }
 
 #[allow(dead_code)]
@@ -691,6 +954,9 @@ mod tests {
         ));
         assert!(is_balerx_hook_command(
             r#""C:\Program Files\balerx\balerx.exe" hook --event-type pre_tool_use"#
+        ));
+        assert!(is_balerx_hook_command(
+            r"'/home/user/my path/balerx' hook --event-type pre_tool_use"
         ));
         assert!(!is_balerx_hook_command("my-balerx-webhook.sh"));
         assert!(!is_balerx_hook_command("echo keep"));
@@ -982,5 +1248,245 @@ mod tests {
             .claude_settings
             .to_string_lossy()
             .contains("settings.json"));
+    }
+
+    fn with_hook_binary(path: &str, body: impl FnOnce()) {
+        HOOK_BINARY_OVERRIDE.with(|slot| {
+            *slot.borrow_mut() = Some(path.to_string());
+        });
+        body();
+        HOOK_BINARY_OVERRIDE.with(|slot| {
+            *slot.borrow_mut() = None;
+        });
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn shell_quote_handles_spaces() {
+        let path = "/home/user/my folder/balerx";
+        let quoted = shell_quote(path);
+        assert!(quoted.starts_with('\'') && quoted.ends_with('\''));
+        assert!(quoted.contains("my folder"));
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn shell_quote_handles_single_quotes() {
+        let path = "/home/user/isn't/balerx";
+        let quoted = shell_quote(path);
+        assert!(quoted.contains("'\\''"));
+    }
+
+    #[test]
+    fn shell_quote_windows_path_with_space() {
+        let path = r"C:\Program Files\balerx\balerx.exe";
+        let quoted = shell_quote(path);
+        assert!(quoted.starts_with('"') && quoted.ends_with('"'));
+        assert!(quoted.contains("Program Files"));
+    }
+
+    #[test]
+    fn shell_quote_windows_path_with_double_quote() {
+        let path = r#"C:\Program "Files"\balerx.exe"#;
+        let quoted = shell_quote(path);
+        assert!(quoted.contains("\"\""));
+    }
+
+    #[test]
+    fn shell_quote_simple_path_unchanged() {
+        let path = "/usr/local/bin/balerx";
+        let quoted = shell_quote(path);
+        assert_eq!(quoted, path);
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))]
+    fn posix_path_with_backslash_and_dollar_uses_single_quotes() {
+        let path = r"/tmp/foo\bar$baz/balerx";
+        let quoted = shell_quote(path);
+        assert_eq!(quoted, r"'/tmp/foo\bar$baz/balerx'");
+        assert!(
+            !quoted.starts_with('"'),
+            "POSIX path must not use Windows quotes"
+        );
+    }
+
+    #[test]
+    fn windows_hook_command_plain_path_uses_call_operator() {
+        let command = format_hook_command(r"C:\Users\bob\balerx.exe", "pre_tool_use", true);
+        assert_eq!(
+            command,
+            r#"& "C:\Users\bob\balerx.exe" hook --event-type pre_tool_use"#
+        );
+    }
+
+    #[test]
+    fn windows_hook_command_path_with_space() {
+        let command =
+            format_hook_command(r"C:\Program Files\balerx\balerx.exe", "pre_tool_use", true);
+        assert_eq!(
+            command,
+            r#"& "C:\Program Files\balerx\balerx.exe" hook --event-type pre_tool_use"#
+        );
+    }
+
+    #[test]
+    fn windows_hook_command_escapes_dollar_and_backtick() {
+        let command =
+            format_hook_command(r"C:\Users\bob\foo$bar`baz\balerx.exe", "pre_tool_use", true);
+        assert_eq!(
+            command,
+            r#"& "C:\Users\bob\foo`$bar``baz\balerx.exe" hook --event-type pre_tool_use"#
+        );
+    }
+
+    #[test]
+    fn windows_hook_command_path_with_ampersand() {
+        let command = format_hook_command(r"C:\Users\bob\foo&bar\balerx.exe", "pre_tool_use", true);
+        assert_eq!(
+            command,
+            r#"& "C:\Users\bob\foo&bar\balerx.exe" hook --event-type pre_tool_use"#
+        );
+        assert!(is_balerx_hook_command(&command));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn posix_exec_roundtrip_backslash_and_dollar() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = temp_home("exec-roundtrip");
+        let dir = home.join(r"sub\dir$foo");
+        fs::create_dir_all(&dir).expect("dir");
+        let script = dir.join("balerx");
+        fs::write(&script, "#!/bin/sh\necho ROUNDTRIP_OK\n").expect("write script");
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).expect("chmod");
+        let quoted = quote_path(script.to_str().expect("utf8"), false);
+        assert!(
+            quoted.starts_with('\''),
+            "expected POSIX single quotes: {quoted}"
+        );
+        let output = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(&quoted)
+            .output()
+            .expect("run quoted path");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success() && stdout.contains("ROUNDTRIP_OK"),
+            "quoted path failed: {quoted}\n{stdout}\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let _ = fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn command_tokens_handles_escaped_single_quotes() {
+        let command = "'/tmp/isn'\\''t/balerx' hook --event-type pre_tool_use";
+        let tokens = command_tokens(command);
+        assert!(tokens[0].contains("isn't"));
+        assert_eq!(tokens[1], "hook");
+    }
+
+    #[test]
+    fn command_tokens_handles_windows_escaped_quotes() {
+        let command = r#""C:\Program ""Files""\balerx.exe" hook --event-type pre_tool_use"#;
+        let tokens = command_tokens(command);
+        assert!(tokens[0].contains("Program \"Files\""));
+        assert_eq!(tokens[1], "hook");
+    }
+
+    #[test]
+    fn install_uninstall_idempotency_with_space_in_path() {
+        let home = temp_home("space-path");
+        let installer = HookInstaller::with_home(&home);
+        let awkward = if cfg!(windows) {
+            r"C:\Program Files\o'brien\balerx.exe"
+        } else {
+            "/tmp/my dir/o'brien/balerx"
+        };
+
+        with_hook_binary(awkward, || {
+            let cursor_hooks = home.join(".cursor").join("hooks.json");
+            fs::create_dir_all(cursor_hooks.parent().expect("parent")).expect("dir");
+
+            installer.install_cursor_hooks().expect("first install");
+            let first_content = fs::read_to_string(&cursor_hooks).expect("read first");
+
+            installer.install_cursor_hooks().expect("second install");
+            let second_content = fs::read_to_string(&cursor_hooks).expect("read second");
+
+            let first_hooks: Value = serde_json::from_str(&first_content).expect("parse first");
+            let second_hooks: Value = serde_json::from_str(&second_content).expect("parse second");
+
+            let first_commands: Vec<&str> = first_hooks["hooks"]["beforeShellExecution"]
+                .as_array()
+                .expect("array")
+                .iter()
+                .filter_map(|h| h["command"].as_str())
+                .collect();
+            let second_commands: Vec<&str> = second_hooks["hooks"]["beforeShellExecution"]
+                .as_array()
+                .expect("array")
+                .iter()
+                .filter_map(|h| h["command"].as_str())
+                .collect();
+
+            assert_eq!(first_commands.len(), second_commands.len());
+            let balerx_hooks = first_commands
+                .iter()
+                .filter(|cmd| is_balerx_hook_command(cmd))
+                .count();
+            assert_eq!(balerx_hooks, 1);
+            assert!(
+                first_commands
+                    .iter()
+                    .any(|cmd| cmd.contains("my dir") || cmd.contains("Program Files")),
+                "installed command should keep the spaced path: {first_commands:?}"
+            );
+            assert!(
+                first_commands.iter().any(|cmd| cmd.contains("o'brien")
+                    || cmd.contains(r"o'brien")
+                    || cmd.contains("'\\''")),
+                "installed command should quote the apostrophe: {first_commands:?}"
+            );
+
+            installer.uninstall_cursor_hooks().expect("uninstall");
+            let after_content = fs::read_to_string(&cursor_hooks).expect("read after");
+            let after_hooks: Value = serde_json::from_str(&after_content).expect("parse after");
+            let after_commands: Vec<&str> = after_hooks["hooks"]
+                .get("beforeShellExecution")
+                .and_then(Value::as_array)
+                .map(|arr| arr.iter().filter_map(|h| h["command"].as_str()).collect())
+                .unwrap_or_default();
+
+            let balerx_after = after_commands
+                .iter()
+                .filter(|cmd| is_balerx_hook_command(cmd))
+                .count();
+            assert_eq!(balerx_after, 0);
+        });
+
+        let _ = fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn missing_hook_binary_is_reported() {
+        let issues = check_hook_binary("/definitely/missing/balerx");
+        assert!(issues.is_err());
+        assert!(issues.unwrap_err().contains("missing"));
+    }
+
+    #[test]
+    fn hook_path_unescapes_powershell_dollar_and_backtick() {
+        let command = r#"& "C:\Users\bob\foo`$bar``baz\balerx.exe" hook --event-type pre_tool_use"#;
+        let path = hook_binary_path_from_command(command).expect("path");
+        assert_eq!(path, r"C:\Users\bob\foo$bar`baz\balerx.exe");
+    }
+
+    #[test]
+    fn hook_path_keeps_posix_backtick_in_directory() {
+        let command = r"'/tmp/dir`name/balerx' hook --event-type pre_tool_use";
+        let path = hook_binary_path_from_command(command).expect("path");
+        assert_eq!(path, "/tmp/dir`name/balerx");
     }
 }

@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::agent::Agent;
+use crate::redaction::redact_evidence_value;
 use crate::rules::RuleId;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -235,8 +236,8 @@ impl Finding {
     }
 
     #[must_use]
-    pub fn with_evidence(mut self, evidence: serde_json::Value) -> Self {
-        self.evidence = evidence;
+    pub fn with_evidence(mut self, evidence: &serde_json::Value) -> Self {
+        self.evidence = redact_evidence_value(evidence);
         self
     }
 

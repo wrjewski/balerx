@@ -22,7 +22,7 @@ These are not offered. The hook engine cannot enforce them:
 
 `fail_open` stays true and `timeout_ms` stays 50.
 
-`balerx policy pull` can replace the local file. It does not run unless you pass `--api-url` and `--api-key`, or set `BALERX_API_URL` and `BALERX_API_KEY`. Invalid YAML is rejected and the previous file is left in place. `--output` chooses a path other than `~/.balerx/policy.yaml`.
+`balerx policy pull` can replace the local file. It does not run unless you pass `--api-url` and set `BALERX_API_KEY`, or pass `--api-key -` to read from stdin. Invalid YAML is rejected and the previous file is left in place. `--output` chooses a path other than `~/.balerx/policy.yaml`.
 
 No API host is compiled in. Use the API URL shown in your Balerx Gate dashboard's onboarding. The client calls `GET {api-url}/v1/ingest/policy` with `Authorization: Bearer <api-key>`.
 

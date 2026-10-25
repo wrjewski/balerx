@@ -11,7 +11,7 @@ The scanner does not start MCP servers. It does not read your prompts. A normal 
 
 ## Privacy
 
-`balerx scan` reads agent config files it can open, plus the current directory when it looks for suspicious instruction text. Findings store a redacted secret (a short prefix and `REDACTED`) rather than the secret itself.
+`balerx scan` reads agent config files it can open, plus the current directory when it looks for suspicious instruction text. Findings store a redacted secret (a short prefix and `REDACTED`) rather than the secret itself. Credentials in MCP server URLs, meaning userinfo and sensitive query parameters, are redacted in terminal, JSON, SARIF, HTML, the lockfile, and upload. Userinfo is taken from the `@` in the authority only, so a path such as `/pkg@latest` stays. A `/` inside what looks like userinfo ends the authority, so that value is a path and is not redacted. Values that appear only in a URL path are not redacted.
 
 Prompt text is not collected. Tool-argument capture is off. The activity log is metadata only: time, agent, action, resource path, and the allow or deny decision. `balerx upload` also deletes `tool_args` from each log line before the request. This version has no flag that turns prompt or tool-argument capture on.
 
@@ -19,11 +19,11 @@ Nothing is uploaded unless you run `balerx upload` or `balerx policy pull` with 
 
 ## Install
 
-Supported platforms are Windows, macOS, and Linux. The commands are the same on each. Prebuilt binaries are GitHub Releases. The current scanner version is 0.1.5.
+Supported platforms are Windows, macOS, and Linux. The commands are the same on each. Prebuilt binaries are GitHub Releases. The current scanner version is 0.1.6.
 
 ### Prebuilt binary
 
-`BALERX_REPO` defaults to `wrjewski/balerx`. The scripts download `https://github.com/wrjewski/balerx/releases/latest/download/` and check `SHA256SUMS` before installing. Set `BALERX_VERSION` (for example `0.1.5`) to download that tag instead of the latest release. If `cosign` is on `PATH`, the script also verifies `SHA256SUMS.bundle` (keyless Sigstore). Without `cosign`, the checksum check is the whole verification. If the checksum file is missing, the script prints the `cargo install` command below and exits.
+`BALERX_REPO` defaults to `wrjewski/balerx`. The scripts download `https://github.com/wrjewski/balerx/releases/latest/download/` and check `SHA256SUMS` before installing. Set `BALERX_VERSION` (for example `0.1.6`) to download that tag instead of the latest release. If `cosign` is on `PATH`, the script also verifies `SHA256SUMS.bundle` (keyless Sigstore). Without `cosign`, the checksum check is the whole verification. If the checksum file is missing, the script prints the `cargo install` command below and exits.
 
 Linux or macOS, into `$HOME/.local/bin`:
 
@@ -67,14 +67,14 @@ cargo build --locked --release
 .\target\release\balerx.exe --version
 ```
 
-`balerx 0.1.5` is the expected first line. Add `target/release` to your `PATH`, or copy the binary to a directory already on `PATH`.
+`balerx 0.1.6` is the expected first line. Add `target/release` to your `PATH`, or copy the binary to a directory already on `PATH`.
 
 `balerx setup` and `balerx policy init` print a banner before the checklist. A color terminal at least 70 columns wide shows the dragon mark and a BALERX GATE wordmark. A narrower terminal prints one line. `NO_COLOR`, `--no-color`, and a pipe print this plain text. `balerx scan`, `balerx hook`, `--help`, and `--version` leave the banner out. The installers print the same banner on the Installed screen.
 
 ```text
 Balerx Gate
 Security for AI agents
-v0.1.5
+v0.1.6
 ```
 
 ## Quick start
@@ -153,7 +153,7 @@ balerx scan --json scan.json --sarif scan.sarif --html report.html
 | Code | When |
 | --- | --- |
 | 0 | No critical or high finding. `balerx diff` also returns 0 when the lockfile matches. `balerx canary check` returns 0 when the path is not a planted canary. |
-| 1 | At least one high finding, or `balerx diff` found drift, or the command failed (missing lockfile, missing file, missing API URL). `balerx canary check` returns 1 when the file is missing. `balerx guard status` returns 0 when no hook is installed and prints the install command. `balerx guard status --strict` (alias `--check`) returns 1 in that case, for a CI script. |
+| 1 | At least one high finding, or `balerx diff` found drift, or the command failed (missing lockfile, missing file, missing API URL). `balerx canary check` returns 1 when the file is missing. `balerx guard status` returns 0 when no hook is installed and prints the install command. `balerx guard status --strict` (alias `--check`) returns 1 in that case, for a CI script. `guard status` and `doctor` also return 1 when an installed hook binary is missing or not executable. |
 | 2 | At least one critical finding. Critical wins over high. `balerx canary check` returns 2 when the path is a planted canary. A Claude Code deny also exits 2. |
 
 Medium, low, and info findings stay on exit code 0 unless you pass `--fail-on`. `--fail-on critical|high|medium|low|info` exits 1 when any finding is at or above that severity. These default codes were checked with `balerx scan` against a medium-only config (0), a plain-HTTP config (1), and a config containing an access-key-shaped value (2).
@@ -174,31 +174,31 @@ Flags below are the ones `balerx <command> --help` prints. `-h` and `--help` exi
 | `balerx scan --no-color` | Disable color. Same as `NO_COLOR`. |
 | `balerx scan --exclude <PATH>` | Drop findings under this path. Repeat the flag for more than one path. |
 | `balerx scan --baseline <FILE>` | Hide findings listed in a JSON file: `{"ignore":[{"rule_id":"MCP-REMOTE-001","resource":".cursor/mcp.json"}]}`. `rule_id` is the rule code. |
-| `balerx doctor` | Print the version, data directory, Guard hook state, and policy path. Offline. Exits 0 when the data directory is usable. |
+| `balerx doctor` | Print the version, data directory, Guard hook state, and policy path. Offline. Exits 0 when the data directory is usable. Same hook-binary check as `guard status`. |
 | `balerx completions <SHELL>` | Print a completion script for `bash`, `zsh`, `fish`, or `powershell`. |
 | `balerx version` | Print the version. `balerx --version` and `-V` do the same and stay offline. |
 | `balerx version --check` | Compare this version with the latest stable GitHub release. One request. Off unless you pass `--check`. `--json` prints the result. |
 | `balerx self-update` | Print the current version and the public install command. It does not download or replace the binary. |
 | `balerx self-update --check` | Same release check as `balerx version --check`. `--json` requires `--check`. |
-| `balerx lock` | Write `balerx.lock` in the current directory. MCP servers, a config content hash, and home-relative paths are recorded. The hostname is omitted. |
+| `balerx lock` | Write `balerx.lock` in the current directory. MCP servers, a config content hash of the raw config, and home-relative paths are recorded. Command and args are stored redacted. The hostname is omitted. |
 | `balerx lock -o, --output <PATH>` | Write the lockfile somewhere else. |
 | `balerx diff` | Compare the current machine with `balerx.lock`, including MCP servers that were added, removed, or changed. |
 | `balerx diff -l, --lockfile <PATH>` | Compare against another lockfile. |
-| `balerx guard install <AGENT>` | Merge local hooks. `<AGENT>` is `claude-code` (`~/.claude/settings.json`) or `cursor` (`~/.cursor/hooks.json`). Existing hooks stay. |
+| `balerx guard install <AGENT>` | Merge local hooks. `<AGENT>` is `claude-code` (`~/.claude/settings.json`) or `cursor` (`~/.cursor/hooks.json`). Existing hooks stay. The hook binary path is quoted: POSIX single quotes, or PowerShell `& "path"` with `$` and backtick escaped. |
 | `balerx guard uninstall <AGENT>` | Remove only Balerx hook commands for one agent. Other hooks stay. No backup is restored. |
 | `balerx uninstall` | Remove Balerx hook commands from Claude Code and Cursor. A command matches when it runs the `balerx` binary, or `balerx.exe`, with a `hook` argument. `my-balerx-webhook.sh` stays. Asks first. `--yes` skips the question. A pipe without `--yes` changes nothing. Without `--purge`, policy and logs stay. `--purge` deletes known policy files and `logs/activity.jsonl`. Unknown files stay. A custom data directory is not removed. Offline. |
-| `balerx guard status` | Show install state, `fail_open`, `timeout_ms`, and the log path. |
+| `balerx guard status` | Show install state, `fail_open`, `timeout_ms`, and the log path. Exits non-zero when an installed hook binary is missing or not executable. PowerShell `& "..."` paths are unescaped; POSIX paths keep a backtick in the directory. |
 | `balerx hook --event-type <EVENT_TYPE>` | Read one JSON event on stdin and print the agent's native decision (`permissionDecision` for Claude Code, `permission` for Cursor), including `ask`. Agents call this. |
 | `balerx log view` | Show the local activity log. Default `--limit` is 50. |
 | `balerx log view -l, --limit <N>` | Show at most N entries. |
 | `balerx log view -a, --agent <AGENT>` | Keep entries whose agent field equals this string. |
 | `balerx log view -t, --event-type <TYPE>` | Keep entries whose event type equals this string. |
-| `balerx canary plant <TYPE>` | Write a realistic credential file with no canary banner. `<TYPE>` is `aws`, `env`, `ssh`, or `generic`. The command says the access is written to the local activity log. It does not send an alert. |
+| `balerx canary plant <TYPE>` | Write a fake credential file that looks realistic. The file itself does not contain any banner identifying it as fake. `<TYPE>` is `aws`, `env`, `ssh`, or `generic`. The command says the access is written to the local activity log. It does not send an alert. Refuses to overwrite an existing file unless `--force` / `-f` is passed. Symbolic links and symlinked parent directories are always refused, even with `--force`. |
 | `balerx canary plant <TYPE> -l, --location <PATH>` | Choose the file path. The default is `~/.balerx/canaries/` plus a type-specific name. |
-| `balerx canary list` | List planted canaries. |
+| `balerx canary list` | List planted canaries, sorted by creation time. |
 | `balerx canary check <PATH>` | Exit 0, 2, or 1: not a canary, a canary, or a missing file. |
 | `balerx canary remove <CANARY_ID>` | Delete one canary by the id from `plant` or `list`. |
-| `balerx upload --api-url <URL> --api-key <KEY>` | Send data. Also requires `--scan`, `--activity-log`, and/or `--lockfile`. |
+| `balerx upload --api-url <URL>` | Send data. Requires `BALERX_API_KEY` or `--api-key -` from stdin. Also requires `--scan`, `--activity-log`, and/or `--lockfile`. |
 | `balerx upload --scan <FILE>` | Upload findings JSON from `balerx scan --json`. |
 | `balerx upload --activity-log <FILE>` | Upload a Guard JSONL log. Tool arguments are removed first. |
 | `balerx upload --lockfile <FILE>` | Attach lockfile drift to the scan upload. |
@@ -206,10 +206,38 @@ Flags below are the ones `balerx <command> --help` prints. `-h` and `--help` exi
 | `balerx policy init` | Same as `balerx setup`. |
 | `balerx policy show` | Print the active policy. A missing file prints the built-in policy. |
 | `balerx policy edit` | Open the checklist pre-filled from the current file. |
-| `balerx policy pull --api-url <URL> --api-key <KEY>` | Download the organization policy. |
+| `balerx policy pull --api-url <URL>` | Download the organization policy. Requires `BALERX_API_KEY` or `--api-key -` from stdin. |
 | `balerx policy pull --output <PATH>` | Write the policy somewhere other than `~/.balerx/policy.yaml`. |
 
-`upload` and `policy pull` accept the same values from `BALERX_API_URL` and `BALERX_API_KEY`. `--api-key -` reads the key from stdin. A literal `--api-key VALUE` is rejected, because that value shows up in the process list and shell history. If the URL is missing, the command prints `Pass --api-url or set BALERX_API_URL` and exits 1 without opening a connection. A rejected key mentions HTTP 401. A missing file mentions the path (`Could not read file:`).
+`upload` and `policy pull` read the API key from `BALERX_API_KEY`, or from stdin with `--api-key -`. A literal `--api-key VALUE` is rejected for security (it shows up in the process list and shell history).
+
+bash/zsh:
+
+```bash
+export BALERX_API_KEY=<key>
+balerx upload --api-url https://your-origin --scan scan.json
+```
+
+Or:
+
+```bash
+printf '%s' "$BALERX_API_KEY" | balerx upload --api-url https://your-origin --api-key - --scan scan.json
+```
+
+PowerShell:
+
+```powershell
+$env:BALERX_API_KEY = "<key>"
+balerx upload --api-url https://your-origin --scan scan.json
+```
+
+Or:
+
+```powershell
+"$env:BALERX_API_KEY" | balerx upload --api-url https://your-origin --api-key - --scan scan.json
+```
+
+If the URL is missing, the command prints `Pass --api-url or set BALERX_API_URL` and exits 1 without opening a connection. A rejected key mentions HTTP 401. A missing file mentions the path (`Could not read file:`).
 
 More detail: [scan](../docs/cli/scan.md), [guard](../docs/cli/guard.md), [policy](../docs/cli/policy.md), [hooks](../docs/HOOKS.md).
 
@@ -263,7 +291,7 @@ jobs:
           sarif-file: balerx.sarif
 ```
 
-`version` pins a release (`0.1.5`). Leave it empty to use the latest release. The action lives at `.github/actions/scan` in https://github.com/wrjewski/balerx.
+`version` pins a release (`0.1.6`). Leave it empty to use the latest release. The action lives at `.github/actions/scan` in https://github.com/wrjewski/balerx.
 
 ## Agents and rules
 
@@ -289,7 +317,7 @@ jobs:
 
 | Code | JSON `rule_id` | Severity | When it fires |
 | --- | --- | --- | --- |
-| `MCP-SUPPLY-001` | `McpSupplyUnpinned` | medium | `npx`, `uvx`, `pip`, or a Docker image with no version pin. `-y` and `--yes` are flags, not package names. `@scope/pkg@1.2.3` and `uvx`/`pip` `==` specs are pinned. `@latest` is not this rule |
+| `MCP-SUPPLY-001` | `McpSupplyUnpinned` | medium | `npx`, `uvx`, `pip`, or a Docker image with no version pin. Git and tarball specs that contain `://` are unpinned. `-y` and `--yes` are flags, not package names. `@scope/pkg@1.2.3` and `uvx`/`pip` `==` specs are pinned. `@latest` is not this rule |
 | `MCP-SUPPLY-002` | `McpSupplyLatest` | medium | package or image uses `@latest`, `:latest`, or `*` |
 | `MCP-PERM-001` | `McpPermBroadFilesystem` | high | an argument is `/`, `C:\`, `~`, `$HOME`, `/home`, `/Users`, `/root`, or one home directory such as `/home/dev` |
 | `MCP-PERM-002` | `McpPermShellExec` | high | the server command is a shell (`bash`, `sh`, `zsh`, `powershell`, `pwsh`, `cmd`) |
@@ -307,7 +335,7 @@ jobs:
 | `HOOK-GAP-001` | `HookGapNoGuard` | medium | Claude Code or Cursor has a config file and no Balerx hook command in it |
 | `CONFIG-001` | `ConfigInvalid` | info or high | an empty, whitespace-only, or BOM-only file is info. Invalid JSON or TOML is high and includes the parser line and column |
 
-`MCP-SUPPLY-003`, `MCP-SUPPLY-004`, and `HOOK-GAP-002` are planned. This version of `balerx scan` does not emit them. An agent other than Claude Code or Cursor gets a Guard coverage line. The line says Guard hooks are not available for that agent yet and that the scan still checks its config. It is separate from findings and leaves the risk score unchanged. Duplicate findings with the same rule, resource, title, and evidence are collapsed. The risk label is CRITICAL when there is a critical finding or the score is above 75, HIGH when there are 3 or more high findings or the score is above 50, MEDIUM when any high or medium finding remains or the score is above 25, and LOW otherwise. Three high findings are HIGH even though 3 × 10 is 30.
+`MCP-SUPPLY-003`, `MCP-SUPPLY-004`, and `HOOK-GAP-002` are planned. This version of `balerx scan` does not emit them. Git and tarball specs that contain `://` raise `MCP-SUPPLY-001`. An agent other than Claude Code or Cursor gets a Guard coverage line. The line says Guard hooks are not available for that agent yet and that the scan still checks its config. It is separate from findings and leaves the risk score unchanged. Duplicate findings with the same rule, resource, title, and evidence are collapsed. The risk label is CRITICAL when there is a critical finding or the score is above 75, HIGH when there are 3 or more high findings or the score is above 50, MEDIUM when any high or medium finding remains or the score is above 25, and LOW otherwise. Three high findings are HIGH even though 3 × 10 is 30.
 
 Guard's built-in policy, used when `~/.balerx/policy.yaml` is missing:
 

@@ -147,7 +147,9 @@ enum Commands {
         #[arg(long)]
         api_url: Option<String>,
 
-        /// Project ingest API key (hashed at rest on the server)
+        /// Project ingest API key (hashed at rest on the server).
+        /// Pass "-" to read from stdin, or set `BALERX_API_KEY`.
+        /// A literal value is rejected for security.
         #[arg(long)]
         api_key: Option<String>,
 
@@ -243,15 +245,17 @@ enum PolicyCommands {
 
     /// Fetch the organization policy with an ingest key and write it locally.
     ///
-    /// Does not contact the network unless `--api-url` and `--api-key` (or
-    /// `BALERX_API_URL` and `BALERX_API_KEY`) are set.
+    /// Does not contact the network unless `--api-url` and `BALERX_API_KEY` are set,
+    /// or `--api-key -` is passed to read from stdin.
     Pull {
         /// API base URL from your Balerx Gate dashboard onboarding.
         /// No host is compiled in. Overrides `BALERX_API_URL` when set.
         #[arg(long)]
         api_url: Option<String>,
 
-        /// Project ingest or enrollment API key
+        /// Project ingest or enrollment API key.
+        /// Pass "-" to read from stdin, or set `BALERX_API_KEY`.
+        /// A literal value is rejected for security.
         #[arg(long)]
         api_key: Option<String>,
 
@@ -305,7 +309,7 @@ enum LogCommands {
 
 #[derive(Subcommand)]
 enum CanaryCommands {
-    /// Plant a canary credential
+    /// Plant a canary credential. Refuses to overwrite an existing file unless --force is passed. Symbolic links and symlinked parent directories are always refused, even with --force
     Plant {
         /// Type of canary to plant
         #[arg(value_enum)]
@@ -314,6 +318,10 @@ enum CanaryCommands {
         /// Location to plant the canary
         #[arg(short, long)]
         location: Option<PathBuf>,
+
+        /// Overwrite existing file if it exists. Symbolic links and symlinked parent directories are always refused, even with --force
+        #[arg(short, long)]
+        force: bool,
     },
 
     /// Remove a canary credential
@@ -608,7 +616,7 @@ fn run_scan(options: ScanOptions) -> Result<()> {
                     )
                     .with_agent(&agent_name)
                     .with_resource(config_path.to_string_lossy().to_string())
-                    .with_evidence(serde_json::json!({
+                    .with_evidence(&serde_json::json!({
                         "redacted_value": secret.redacted_value,
                         "location": secret.location
                     }))
@@ -631,7 +639,7 @@ fn run_scan(options: ScanOptions) -> Result<()> {
                     )
                     .with_agent(&agent_name)
                     .with_resource(config_path.to_string_lossy().to_string())
-                    .with_evidence(serde_json::json!({
+                    .with_evidence(&serde_json::json!({
                         "server_name": issue.server_name,
                         "resource": issue.resource
                     }))
@@ -735,7 +743,7 @@ fn run_scan(options: ScanOptions) -> Result<()> {
                     "Found potentially malicious pattern in agent configuration file".to_string(),
                 )
                 .with_resource(poison.location.clone())
-                .with_evidence(serde_json::json!({
+                .with_evidence(&serde_json::json!({
                     "pattern": poison.pattern_name,
                     "context": poison.context
                 }))
@@ -1038,6 +1046,7 @@ fn run_diff(lockfile_path: &PathBuf) -> Result<()> {
     std::process::exit(1);
 }
 
+#[allow(clippy::too_many_lines)]
 fn run_guard(command: &GuardCommands) -> Result<()> {
     let installer = HookInstaller::new();
 
@@ -1137,6 +1146,16 @@ fn run_guard(command: &GuardCommands) -> Result<()> {
                 if *strict {
                     std::process::exit(1);
                 }
+            }
+            let home = balerx_core::agent::home_dir().unwrap_or_else(|| PathBuf::from("."));
+            let issues = balerx_core::guard::hook_binary_issues(&home);
+            if !issues.is_empty() {
+                for issue in &issues {
+                    eprintln!("{issue}");
+                }
+                anyhow::bail!(
+                    "Guard hook binary is missing or not executable. Reinstall with: balerx guard install claude-code or balerx guard install cursor"
+                );
             }
         }
     }
@@ -1281,6 +1300,7 @@ fn run_canary(command: CanaryCommands) -> Result<()> {
         CanaryCommands::Plant {
             canary_type,
             location,
+            force,
         } => {
             let canary_type = match canary_type {
                 CliCanaryType::Aws => CanaryType::AwsCredentials,
@@ -1299,7 +1319,7 @@ fn run_canary(command: CanaryCommands) -> Result<()> {
                     .join(canary_type.default_filename())
             };
 
-            let canary = manager.plant(canary_type, &location)?;
+            let canary = manager.plant(canary_type, &location, force)?;
             println!("\n✓ Canary ID: {}", canary.id);
             println!("\nWARNING: This is a FAKE credential for detection only.");
             println!(
@@ -1391,7 +1411,26 @@ fn resolve_api_key(api_key: Option<String>) -> Result<String> {
             return Ok(key);
         }
         anyhow::bail!(
-            "--api-key VALUE is not accepted. It would show up in the process list and shell history. Set BALERX_API_KEY, or pass --api-key - to read the key from stdin."
+            "--api-key VALUE is not accepted. It would show up in the process list and shell history.\n\
+             Use one of these secure forms instead:\n\
+             \n\
+             bash/zsh:\n\
+               export BALERX_API_KEY=<key>\n\
+               balerx upload --api-url <URL> --scan scan.json\n\
+             \n\
+             Or read from stdin:\n\
+               printf '%s' \"$BALERX_API_KEY\" | balerx upload --api-url <URL> --api-key - --scan scan.json\n\
+             \n\
+             PowerShell:\n\
+               $env:BALERX_API_KEY = \"<key>\"\n\
+               balerx upload --api-url <URL> --scan scan.json\n\
+             \n\
+             Or:\n\
+               \"$env:BALERX_API_KEY\" | balerx upload --api-url <URL> --api-key - --scan scan.json\n\
+             \n\
+             cmd:\n\
+               set BALERX_API_KEY=<key>\n\
+               balerx upload --api-url <URL> --scan scan.json"
         );
     }
     std::env::var("BALERX_API_KEY")
@@ -1545,6 +1584,16 @@ fn run_doctor() -> Result<()> {
     println!("offline: doctor does not contact the network");
     if !writable {
         anyhow::bail!("The data directory is not writable");
+    }
+    let home = balerx_core::agent::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    let issues = balerx_core::guard::hook_binary_issues(&home);
+    if !issues.is_empty() {
+        for issue in &issues {
+            eprintln!("{issue}");
+        }
+        anyhow::bail!(
+            "Guard hook binary is missing or not executable. Reinstall with: balerx guard install claude-code or balerx guard install cursor"
+        );
     }
     Ok(())
 }
@@ -1784,7 +1833,12 @@ fn run_upload(
             })
         };
         attach_fleet(&mut payload, lockfile)?;
-        post_json(&format!("{base}/v1/ingest/scans"), &api_key, &payload)?;
+        let redacted_payload = balerx_core::redaction::redact_evidence_value(&payload);
+        post_json(
+            &format!("{base}/v1/ingest/scans"),
+            &api_key,
+            &redacted_payload,
+        )?;
         if let Some(path) = &scan {
             println!("Uploaded scan {}", path.display());
         } else {
