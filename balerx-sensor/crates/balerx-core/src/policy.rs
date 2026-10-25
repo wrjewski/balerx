@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Policy {
@@ -20,13 +20,22 @@ fn default_version() -> String {
     "1.0.0".to_string()
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GlobalSettings {
     #[serde(default = "default_fail_open")]
     pub fail_open: bool,
 
     #[serde(default = "default_timeout_ms")]
     pub timeout_ms: u64,
+}
+
+impl Default for GlobalSettings {
+    fn default() -> Self {
+        Self {
+            fail_open: default_fail_open(),
+            timeout_ms: default_timeout_ms(),
+        }
+    }
 }
 
 fn default_fail_open() -> bool {
@@ -97,10 +106,7 @@ impl Policy {
     pub fn default_policy() -> Self {
         Self {
             version: "1.0.0".to_string(),
-            global: GlobalSettings {
-                fail_open: true,
-                timeout_ms: 50,
-            },
+            global: GlobalSettings::default(),
             rules: Self::default_rules(),
         }
     }
@@ -167,24 +173,65 @@ impl Policy {
 
     /// Parses a policy document.
     ///
+    /// Empty, whitespace-only, comment-only, or YAML-null text is rejected.
+    /// A missing file is handled by [`inspect_file`]; this function is for
+    /// present content only.
+    ///
     /// # Errors
     ///
-    /// Returns an error if `yaml` is not a Balerx policy document.
+    /// Returns an error if `yaml` is empty or is not a Balerx policy document.
     pub fn from_yaml_str(yaml: &str) -> Result<Self> {
-        serde_yaml::from_str(yaml).context("Failed to parse policy YAML")
+        if is_blank_policy_yaml(yaml) {
+            anyhow::bail!("Policy file is empty");
+        }
+        serde_yaml::from_str(strip_bom(yaml)).context("Failed to parse policy YAML")
     }
 
     /// Loads a policy from a file.
     ///
     /// # Errors
     ///
-    /// Returns an error if the file cannot be read or parsed as YAML.
+    /// Returns an error if the file cannot be read, is empty, or is not YAML.
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self> {
-        let content = fs::read_to_string(path.as_ref())
-            .with_context(|| format!("Failed to read policy file: {}", path.as_ref().display()))?;
+        let path = path.as_ref();
+        let content = fs::read_to_string(path)
+            .with_context(|| format!("Failed to read policy file: {}", path.display()))?;
+        Self::from_yaml_str(&content)
+            .with_context(|| format!("Failed to parse policy file: {}", path.display()))
+    }
 
-        serde_yaml::from_str(&content)
-            .with_context(|| format!("Failed to parse policy file: {}", path.as_ref().display()))
+    /// Classifies a policy path for hook and doctor use.
+    ///
+    /// A missing path is [`PolicyFile::Missing`]. A present empty or
+    /// unparseable file is not treated as the built-in default.
+    #[must_use]
+    pub fn inspect_file(path: Option<&Path>) -> PolicyFile {
+        let Some(path) = path else {
+            return PolicyFile::Missing;
+        };
+        if !path.exists() {
+            return PolicyFile::Missing;
+        }
+        match fs::read_to_string(path) {
+            Ok(content) => {
+                if is_blank_policy_yaml(&content) {
+                    return PolicyFile::Empty {
+                        path: path.to_path_buf(),
+                    };
+                }
+                match Self::from_yaml_str(&content) {
+                    Ok(policy) => PolicyFile::Loaded(policy),
+                    Err(error) => PolicyFile::Invalid {
+                        path: path.to_path_buf(),
+                        message: error.to_string(),
+                    },
+                }
+            }
+            Err(error) => PolicyFile::Invalid {
+                path: path.to_path_buf(),
+                message: error.to_string(),
+            },
+        }
     }
 
     /// Saves the policy to a file.
@@ -308,6 +355,34 @@ impl Policy {
     }
 }
 
+/// How a policy path resolved for hook evaluation and `balerx doctor`.
+#[derive(Debug)]
+pub enum PolicyFile {
+    /// No file at the path. The built-in default policy applies.
+    Missing,
+    /// Present and parseable.
+    Loaded(Policy),
+    /// Present but empty, whitespace-only, comment-only, or YAML-null.
+    Empty { path: PathBuf },
+    /// Present but unreadable or not a policy document.
+    Invalid { path: PathBuf, message: String },
+}
+
+fn strip_bom(text: &str) -> &str {
+    text.strip_prefix('\u{feff}').unwrap_or(text)
+}
+
+fn is_blank_policy_yaml(yaml: &str) -> bool {
+    let yaml = strip_bom(yaml);
+    if yaml.trim().is_empty() {
+        return true;
+    }
+    matches!(
+        serde_yaml::from_str::<serde_yaml::Value>(yaml),
+        Ok(serde_yaml::Value::Null)
+    )
+}
+
 fn action_rank(action: PolicyAction) -> u8 {
     match action {
         PolicyAction::Deny => 3,
@@ -362,6 +437,7 @@ impl HookEventType {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn test_default_policy_has_rules() {
@@ -437,5 +513,102 @@ mod tests {
         let decision = policy.evaluate_event(&event);
         assert_eq!(decision.action, PolicyAction::Deny);
         assert_eq!(decision.matched_rule.as_deref(), Some("deny_env_files"));
+    }
+
+    #[test]
+    fn empty_yaml_is_rejected() {
+        for yaml in [
+            "",
+            "   \n",
+            "\u{feff}",
+            "\u{feff}  \n",
+            "# comment only\n",
+            "null\n",
+            "~\n",
+            "---\n",
+        ] {
+            let error = Policy::from_yaml_str(yaml).expect_err("empty");
+            assert!(error.to_string().contains("empty"), "{yaml:?} -> {error}");
+        }
+    }
+
+    #[test]
+    fn omitted_or_empty_global_uses_documented_defaults() {
+        let rules_only = Policy::from_yaml_str(
+            r#"
+version: "1.0.0"
+rules:
+  - id: deny_env_files
+    description: Deny reading .env files
+    enabled: true
+    action: deny
+    conditions:
+      - type: path_pattern
+        pattern: "**/.env*"
+"#,
+        )
+        .expect("rules-only");
+        assert!(rules_only.global.fail_open);
+        assert_eq!(rules_only.global.timeout_ms, 50);
+        let deny = rules_only.evaluate(&HookEvent {
+            event_type: HookEventType::FileRead,
+            agent: "cursor".to_string(),
+            resource: Some("/home/user/project/.env".to_string()),
+            command: None,
+            mcp_server: None,
+            tool_name: None,
+            metadata: HashMap::new(),
+        });
+        assert_eq!(deny.action, PolicyAction::Deny);
+        let empty_global = Policy::from_yaml_str("version: \"1.0.0\"\nglobal: {}\nrules: []\n")
+            .expect("empty global");
+        assert!(empty_global.global.fail_open);
+        assert_eq!(empty_global.global.timeout_ms, 50);
+        let mapping = Policy::from_yaml_str("{}\n").expect("empty mapping");
+        assert!(mapping.global.fail_open);
+        assert_eq!(mapping.global.timeout_ms, 50);
+    }
+
+    #[test]
+    fn inspect_file_distinguishes_missing_empty_and_invalid() {
+        let dir = std::env::temp_dir().join(format!(
+            "balerx-policy-inspect-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).expect("dir");
+        let missing = dir.join("missing.yaml");
+        assert!(matches!(
+            Policy::inspect_file(Some(&missing)),
+            PolicyFile::Missing
+        ));
+        let empty = dir.join("empty.yaml");
+        fs::write(&empty, "").expect("empty");
+        assert!(matches!(
+            Policy::inspect_file(Some(&empty)),
+            PolicyFile::Empty { .. }
+        ));
+        let comments = dir.join("comments.yaml");
+        fs::write(&comments, "# not a policy\n").expect("comments");
+        assert!(matches!(
+            Policy::inspect_file(Some(&comments)),
+            PolicyFile::Empty { .. }
+        ));
+        let invalid = dir.join("invalid.yaml");
+        fs::write(&invalid, "version: [\n").expect("invalid");
+        assert!(matches!(
+            Policy::inspect_file(Some(&invalid)),
+            PolicyFile::Invalid { .. }
+        ));
+        let valid = dir.join("valid.yaml");
+        fs::write(&valid, "version: \"1.0.0\"\nrules: []\n").expect("valid");
+        assert!(matches!(
+            Policy::inspect_file(Some(&valid)),
+            PolicyFile::Loaded(_)
+        ));
+        let _ = fs::remove_dir_all(dir);
     }
 }

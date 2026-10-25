@@ -128,7 +128,10 @@ pub fn run(args: &SetupArgs, no_color: bool, mode: Mode) -> Result<()> {
         println!("No terminal attached. Wrote the balanced policy.");
     }
     println!("Wrote {}", path.display());
-    println!("fail_open is true and timeout_ms is 50.");
+    println!(
+        "fail_open is {} and timeout_ms is {}.",
+        policy.global.fail_open, policy.global.timeout_ms
+    );
     if tty && !explicit {
         for note in policy_setup::unsupported() {
             println!("Not in the checklist: {note}");

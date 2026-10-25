@@ -21,7 +21,7 @@ Claude Code entries are merged into `~/.claude/settings.json` as `{matcher, hook
 
 `balerx guard status` prints whether those files contain a Balerx hook, the policy `fail_open` and `timeout_ms`, and the activity log path. On a fresh install it exits 0 and prints `Not installed — run: balerx guard install claude-code` and `Not installed — run: balerx guard install cursor`. `--strict` and `--check` exit 1 when no hook is installed. That is the exit code for a CI script. A machine that already has a Claude Code or Cursor hook exits 0, unless the recorded hook binary is missing or not executable: then `guard status` and `doctor` exit non-zero and say so.
 
-Hook payload shapes and the native allow, deny, and ask decisions are in [HOOKS.md](../HOOKS.md). The policy fields are in [policy.md](policy.md). `timeout_ms` is enforced by the hook. `fail_open` chooses allow or deny when the budget is exceeded or the input is not JSON.
+Hook payload shapes and the native allow, deny, and ask decisions are in [HOOKS.md](../HOOKS.md). The policy fields are in [policy.md](policy.md). `timeout_ms` is a wall-clock budget that starts when the hook process starts and is checked after stdin closes. A stdin that never closes can still hang, as in 0.1.6. `fail_open` chooses allow or deny when that remaining budget is gone or the input is not JSON. An allow from `fail_open` is written to the activity log and stderr. An empty, comment-only, or unreadable policy file fails closed with `ask`. Stdin larger than 1 MB also returns `ask`. Omitting `global` or writing `global: {}` uses `fail_open: true` and `timeout_ms: 50`.
 
 ## Activity log
 
@@ -53,4 +53,4 @@ balerx canary remove <canary-id>
 
 ## Hook process
 
-`balerx hook --event-type <name>` reads one JSON event on stdin and writes an allow or deny decision on stdout. Agents invoke this. You can also pipe a fixture in by hand, as [HOOKS.md](../HOOKS.md) shows.
+`balerx hook --event-type <name>` reads one JSON event on stdin (at most 1 MB) and writes an allow, deny, or ask decision on stdout. Agents invoke this. You can also pipe a fixture in by hand, as [HOOKS.md](../HOOKS.md) shows.

@@ -2,6 +2,9 @@ use crate::policy::{HookEvent, HookEventType, Policy, PolicyAction, PolicyDecisi
 use serde_json::Value;
 use std::collections::HashMap;
 
+/// Largest hook stdin the handler will parse. A larger body returns ask.
+pub const MAX_HOOK_INPUT_BYTES: u64 = 1024 * 1024;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HookAgentKind {
     ClaudeCode,
@@ -36,18 +39,35 @@ pub fn decide_payload(
     outcome_for(event_type, event, decision)
 }
 
+/// Decides a hook when the policy file is present but empty or unparseable.
+///
+/// This is fail-closed: the decision is ask, not allow.
+#[must_use]
+pub fn decide_invalid_policy(event_type: &str, reason: &str) -> HookOutcome {
+    decide_fixed(event_type, PolicyAction::Ask, reason)
+}
+
+/// Decides a hook when stdin is larger than [`MAX_HOOK_INPUT_BYTES`].
+#[must_use]
+pub fn decide_oversized(event_type: &str) -> HookOutcome {
+    decide_fixed(
+        event_type,
+        PolicyAction::Ask,
+        "Hook input exceeds 1 MB; failing closed with ask",
+    )
+}
+
+/// Decides a hook when evaluation exceeded `timeout_ms`.
+#[must_use]
+pub fn decide_timeout(event_type: &str, policy: &Policy) -> HookOutcome {
+    let event = placeholder_event(event_type);
+    outcome_for(event_type, event, timeout_decision(policy))
+}
+
 /// Decides a hook when stdin is not JSON.
 #[must_use]
 pub fn decide_unreadable(event_type: &str, policy: &Policy) -> HookOutcome {
-    let event = HookEvent {
-        event_type: HookEventType::ToolCall,
-        agent: agent_name(detect_kind(event_type, &Value::Null)).to_string(),
-        resource: None,
-        command: None,
-        mcp_server: None,
-        tool_name: None,
-        metadata: HashMap::new(),
-    };
+    let event = placeholder_event(event_type);
     let decision = if policy.global.fail_open {
         PolicyDecision {
             action: PolicyAction::Allow,
@@ -124,6 +144,34 @@ pub fn parse_hook_event(event_type: &str, input: &Value) -> HookEvent {
         tool_name,
         metadata,
     }
+}
+
+/// True when `fail_open` turned an error or timeout into allow.
+#[must_use]
+pub fn is_fail_open_allow(decision: &PolicyDecision) -> bool {
+    decision.action == PolicyAction::Allow && decision.reason.contains("fail_open is true")
+}
+
+fn placeholder_event(event_type: &str) -> HookEvent {
+    HookEvent {
+        event_type: HookEventType::ToolCall,
+        agent: agent_name(detect_kind(event_type, &Value::Null)).to_string(),
+        resource: None,
+        command: None,
+        mcp_server: None,
+        tool_name: None,
+        metadata: HashMap::new(),
+    }
+}
+
+fn decide_fixed(event_type: &str, action: PolicyAction, reason: &str) -> HookOutcome {
+    let event = placeholder_event(event_type);
+    let decision = PolicyDecision {
+        action,
+        reason: reason.to_string(),
+        matched_rule: None,
+    };
+    outcome_for(event_type, event, decision)
 }
 
 fn outcome_for(event_type: &str, event: HookEvent, decision: PolicyDecision) -> HookOutcome {
@@ -510,5 +558,25 @@ mod tests {
         let bad_closed = decide_unreadable("before_shell_execution", &closed_policy);
         assert_eq!(bad_closed.decision.action, PolicyAction::Deny);
         assert_eq!(bad_closed.event.agent, "cursor");
+        assert!(is_fail_open_allow(&open.decision));
+        assert!(!is_fail_open_allow(&closed.decision));
+        assert!(is_fail_open_allow(&bad.decision));
+    }
+
+    #[test]
+    fn invalid_policy_and_oversized_input_ask() {
+        let invalid = decide_invalid_policy(
+            "pre_tool_use",
+            "Policy file is empty or invalid; failing closed",
+        );
+        assert_eq!(invalid.decision.action, PolicyAction::Ask);
+        assert_eq!(invalid.exit_code, 0);
+        assert!(invalid.body.contains("\"ask\""));
+
+        let oversized = decide_oversized("before_shell_execution");
+        assert_eq!(oversized.decision.action, PolicyAction::Ask);
+        assert_eq!(oversized.event.agent, "cursor");
+        assert!(oversized.body.contains("\"ask\""));
+        assert!(oversized.decision.reason.contains("1 MB"));
     }
 }
