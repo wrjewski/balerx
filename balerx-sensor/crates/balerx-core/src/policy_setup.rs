@@ -261,12 +261,12 @@ pub fn policy_from_choices(choices: &[ItemChoice], preserve: Option<&Policy>) ->
             }
         }
     }
+    let global = preserve.map_or(GlobalSettings::default(), |existing| {
+        existing.global.clone()
+    });
     Policy {
         version: "1.0.0".to_string(),
-        global: GlobalSettings {
-            fail_open: true,
-            timeout_ms: 50,
-        },
+        global,
         rules,
     }
 }
@@ -597,5 +597,18 @@ mod tests {
             .rules
             .iter()
             .any(|rule| rule.id == "custom_allow_readme"));
+    }
+
+    #[test]
+    fn edit_keeps_fail_open_and_timeout_ms() {
+        let mut existing = policy(SetupPreset::Balanced);
+        existing.global.fail_open = false;
+        existing.global.timeout_ms = 200;
+        let rewritten = policy_from_choices(&choices_from_policy(&existing), Some(&existing));
+        assert!(!rewritten.global.fail_open);
+        assert_eq!(rewritten.global.timeout_ms, 200);
+        let fresh = policy_from_choices(&preset_choices(SetupPreset::Strict), None);
+        assert!(fresh.global.fail_open);
+        assert_eq!(fresh.global.timeout_ms, 50);
     }
 }

@@ -62,7 +62,7 @@ balerx {version}
 This command does not download or replace the binary.
 Install a published release from https://github.com/wrjewski/balerx :
   {INSTALL_COMMAND}
-Pin a release with BALERX_VERSION, for example BALERX_VERSION=0.1.6.
+Pin a release with BALERX_VERSION, for example BALERX_VERSION=0.1.7.
 SHA256SUMS is checked always. If cosign is on PATH, the script also verifies the keyless Sigstore bundle.",
         version = env!("CARGO_PKG_VERSION"),
     )

@@ -6,18 +6,23 @@ use balerx_core::{
     discovery::{AgentDiscovery, ConfigScanner},
     finding::{Confidence, Finding, FindingSeverity, ScanResult},
     guard::{AgentType, HookInstaller},
-    hook_input::{decide_payload, decide_unreadable},
+    hook_input::{
+        decide_invalid_policy, decide_oversized, decide_payload, decide_timeout, decide_unreadable,
+        is_fail_open_allow, MAX_HOOK_INPUT_BYTES,
+    },
     lockfile::{DriftType, Lockfile},
     log::{ActivityEvent, ActivityLog},
     output::{terminal, write_html, write_json, write_sarif},
     poison::PoisonDetector,
-    policy::Policy,
+    policy::{Policy, PolicyFile},
     process::ProcessCollector,
     rules::RuleId,
 };
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use std::io::{self, BufRead, Read};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+use std::time::{Duration, Instant};
 use tracing::info;
 
 mod banner;
@@ -122,6 +127,13 @@ enum Commands {
     Uninstall(uninstall::UninstallArgs),
 
     /// Hook handler (called by agent hooks)
+    ///
+    /// Reads at most 1 MB of stdin. A larger body returns ask.
+    /// A missing policy file uses the built-in default. An empty or unreadable
+    /// policy file fails closed with ask. `timeout_ms` starts at process start
+    /// and is checked after stdin closes. A stdin that never closes can still
+    /// hang. `fail_open` chooses allow or deny after a timeout or invalid JSON,
+    /// and that allow is written to the activity log and stderr.
     Hook {
         /// Event type
         #[arg(long)]
@@ -181,7 +193,7 @@ enum Commands {
         command: PolicyCommands,
     },
 
-    /// Show version, data directory, Guard hooks, and policy. Does not use the network.
+    /// Show version, data directory, Guard hooks, and policy. Parses the policy file. Empty or invalid YAML exits 1. Does not use the network.
     Doctor,
 
     /// Print a shell completion script
@@ -241,6 +253,7 @@ enum PolicyCommands {
     /// Open the checklist again, pre-filled from the current policy file.
     ///
     /// `--preset` or `--yes` rewrites the file without a terminal. The previous file is copied to `policy.yaml.bak`.
+    /// `global.fail_open` and `global.timeout_ms` are kept from the current file.
     Edit(setup::SetupArgs),
 
     /// Fetch the organization policy with an ingest key and write it locally.
@@ -1122,20 +1135,7 @@ fn run_guard(command: &GuardCommands) -> Result<()> {
                 },
                 status.cursor_hooks.display()
             );
-            let policy_path = policy_path_from_env();
-            let policy = policy_path
-                .as_ref()
-                .filter(|path| path.exists())
-                .and_then(|path| Policy::from_file(path).ok())
-                .unwrap_or_else(Policy::default_policy);
-            match &policy_path {
-                Some(path) => println!("Policy: {}", path.display()),
-                None => println!("Policy: {}", balerx_core::agent::HOME_REQUIRED),
-            }
-            println!(
-                "  fail_open={} timeout_ms={}",
-                policy.global.fail_open, policy.global.timeout_ms
-            );
+            print_guard_policy_status();
             println!(
                 "Activity log: {}",
                 ActivityLog::default_log().path().display()
@@ -1163,98 +1163,163 @@ fn run_guard(command: &GuardCommands) -> Result<()> {
     Ok(())
 }
 
-fn run_hook(event_type: &str) -> Result<()> {
-    let start = std::time::Instant::now();
-    let mut raw = String::new();
-    io::stdin().read_to_string(&mut raw)?;
-
+fn print_guard_policy_status() {
     let policy_path = policy_path_from_env();
-    let policy = policy_path
-        .as_ref()
-        .filter(|path| path.exists())
-        .and_then(|path| Policy::from_file(path).ok())
-        .unwrap_or_else(Policy::default_policy);
+    match &policy_path {
+        Some(path) => println!("Policy: {}", path.display()),
+        None => println!("Policy: {}", balerx_core::agent::HOME_REQUIRED),
+    }
+    match Policy::inspect_file(policy_path.as_deref()) {
+        PolicyFile::Loaded(policy) => println!(
+            "  fail_open={} timeout_ms={}",
+            policy.global.fail_open, policy.global.timeout_ms
+        ),
+        PolicyFile::Missing => {
+            let policy = Policy::default_policy();
+            println!(
+                "  fail_open={} timeout_ms={} (built-in default)",
+                policy.global.fail_open, policy.global.timeout_ms
+            );
+        }
+        PolicyFile::Empty { .. } => println!("  policy file is empty; hook fails closed"),
+        PolicyFile::Invalid { message, .. } => {
+            println!("  policy file is invalid; hook fails closed ({message})");
+        }
+    }
+}
 
-    let elapsed = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
-    let parsed = serde_json::from_str::<serde_json::Value>(&raw);
-    let input = parsed.unwrap_or(serde_json::Value::Null);
-    let mut outcome = match serde_json::from_str::<serde_json::Value>(&raw) {
-        Ok(value) => decide_payload(event_type, &value, &policy, elapsed),
-        Err(_) => decide_unreadable(event_type, &policy),
-    };
+fn hook_policy() -> (Policy, Option<String>) {
+    let policy_file = Policy::inspect_file(policy_path_from_env().as_deref());
+    match &policy_file {
+        PolicyFile::Missing | PolicyFile::Loaded(_) => (loaded_or_default(&policy_file), None),
+        PolicyFile::Empty { path } => {
+            let reason = format!(
+                "Policy file is empty: {}. Failing closed with ask",
+                path.display()
+            );
+            eprintln!("warning: {reason}");
+            (Policy::default_policy(), Some(reason))
+        }
+        PolicyFile::Invalid { path, message } => {
+            let reason = format!(
+                "Policy file is invalid ({}): {message}. Failing closed with ask",
+                path.display()
+            );
+            eprintln!("warning: {reason}");
+            (Policy::default_policy(), Some(reason))
+        }
+    }
+}
 
+fn apply_canary_override(
+    outcome: &mut balerx_core::hook_input::HookOutcome,
+    input: &serde_json::Value,
+) -> Result<()> {
     let canary_manager = CanaryManager::new()?;
     let canary_path = outcome
         .event
         .resource
         .clone()
         .or_else(|| outcome.event.command.clone());
-    if let Some(resource) = canary_path.as_deref() {
-        if let Some(canary) = canary_manager.is_canary(resource) {
-            let reason = "Access to a planted canary credential".to_string();
-            outcome.decision.action = balerx_core::policy::PolicyAction::Deny;
-            outcome.decision.reason.clone_from(&reason);
-            outcome.body = match outcome.kind {
-                balerx_core::hook_input::HookAgentKind::ClaudeCode => serde_json::json!({
-                    "hookSpecificOutput": {
-                        "hookEventName": "PreToolUse",
-                        "permissionDecision": "deny",
-                        "permissionDecisionReason": reason
-                    }
-                })
-                .to_string(),
-                balerx_core::hook_input::HookAgentKind::Cursor => serde_json::json!({
-                    "permission": "deny",
-                    "user_message": reason,
-                    "agent_message": reason
-                })
-                .to_string(),
-            };
-            outcome.exit_code = match outcome.kind {
-                balerx_core::hook_input::HookAgentKind::ClaudeCode => 2,
-                balerx_core::hook_input::HookAgentKind::Cursor => 0,
-            };
-            let _ = ActivityLog::default_log().append(
-                ActivityEvent::new("canary_access", &outcome.event.agent, "denied")
-                    .with_resource(resource)
-                    .with_decision("deny")
-                    .with_metadata(guard_activity_metadata(
-                        &input,
-                        &serde_json::json!({
-                            "canary_id": canary.id,
-                            "canary_type": format!("{:?}", canary.canary_type)
-                        }),
-                    )),
-            );
-        }
-    }
+    let Some(resource) = canary_path else {
+        return Ok(());
+    };
+    let Some(canary) = canary_manager.is_canary(&resource) else {
+        return Ok(());
+    };
+    let reason = "Access to a planted canary credential".to_string();
+    outcome.decision.action = balerx_core::policy::PolicyAction::Deny;
+    outcome.decision.reason.clone_from(&reason);
+    outcome.body = match outcome.kind {
+        balerx_core::hook_input::HookAgentKind::ClaudeCode => serde_json::json!({
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "deny",
+                "permissionDecisionReason": reason
+            }
+        })
+        .to_string(),
+        balerx_core::hook_input::HookAgentKind::Cursor => serde_json::json!({
+            "permission": "deny",
+            "user_message": reason,
+            "agent_message": reason
+        })
+        .to_string(),
+    };
+    outcome.exit_code = match outcome.kind {
+        balerx_core::hook_input::HookAgentKind::ClaudeCode => 2,
+        balerx_core::hook_input::HookAgentKind::Cursor => 0,
+    };
+    let _ = ActivityLog::default_log().append(
+        ActivityEvent::new("canary_access", &outcome.event.agent, "denied")
+            .with_resource(resource)
+            .with_decision("deny")
+            .with_metadata(guard_activity_metadata(
+                input,
+                &serde_json::json!({
+                    "canary_id": canary.id,
+                    "canary_type": format!("{:?}", canary.canary_type)
+                }),
+            )),
+    );
+    Ok(())
+}
 
+fn record_hook_activity(
+    event_type: &str,
+    outcome: &balerx_core::hook_input::HookOutcome,
+    input: &serde_json::Value,
+    elapsed: u64,
+) {
     let resource = outcome
         .event
         .resource
         .clone()
         .or(outcome.event.command.clone())
         .unwrap_or_default();
+    let fail_open_allow = is_fail_open_allow(&outcome.decision);
+    if fail_open_allow {
+        eprintln!("fail_open: {}", outcome.decision.reason);
+    }
     let _ = ActivityLog::default_log().append(
         ActivityEvent::new(event_type, &outcome.event.agent, "evaluated")
             .with_resource(resource)
             .with_decision(format!("{:?}", outcome.decision.action))
             .with_metadata(guard_activity_metadata(
-                &input,
+                input,
                 &serde_json::json!({
                     "matched_rule": outcome.decision.matched_rule,
-                    "elapsed_ms": elapsed
+                    "elapsed_ms": elapsed,
+                    "reason": outcome.decision.reason,
+                    "fail_open": fail_open_allow
                 }),
             )),
     );
+}
+
+fn run_hook(event_type: &str) -> Result<()> {
+    let start = Instant::now();
+    let (policy, policy_block) = hook_policy();
+    let input_bytes = read_hook_stdin()?;
+    let mut outcome = if let Some(reason) = policy_block {
+        decide_invalid_policy(event_type, &reason)
+    } else if input_bytes.oversized {
+        decide_oversized(event_type)
+    } else {
+        evaluate_hook_with_timeout(event_type, &input_bytes.raw, &policy, start)
+    };
+    let input = serde_json::from_str::<serde_json::Value>(&input_bytes.raw)
+        .unwrap_or(serde_json::Value::Null);
+    apply_canary_override(&mut outcome, &input)?;
+    record_hook_activity(event_type, &outcome, &input, elapsed_ms(start));
 
     println!("{}", outcome.body);
     if outcome.exit_code != 0 {
         eprintln!("{}", outcome.decision.reason);
-        std::process::exit(outcome.exit_code);
     }
-
-    Ok(())
+    // Exit here so a timed-out evaluation thread cannot keep the hook process
+    // alive after the wall-clock decision has already been written.
+    std::process::exit(outcome.exit_code);
 }
 
 fn run_log(command: LogCommands) -> Result<()> {
@@ -1557,20 +1622,37 @@ fn run_doctor() -> Result<()> {
         data_dir.display(),
         if writable { "writable" } else { "not writable" }
     );
-    match policy_path_from_env() {
-        Some(policy_path) => println!(
-            "policy: {} ({})",
-            policy_path.display(),
-            if policy_path.is_file() {
-                "present"
-            } else {
-                "built-in default"
-            }
-        ),
-        None => println!(
-            "policy: {} (built-in default)",
-            balerx_core::agent::HOME_REQUIRED
-        ),
+    let policy_path = policy_path_from_env();
+    let mut policy_failed = false;
+    match Policy::inspect_file(policy_path.as_deref()) {
+        PolicyFile::Missing => match &policy_path {
+            Some(path) => println!("policy: {} (built-in default)", path.display()),
+            None => println!(
+                "policy: {} (built-in default)",
+                balerx_core::agent::HOME_REQUIRED
+            ),
+        },
+        PolicyFile::Loaded(policy) => {
+            let path = policy_path.as_ref().map_or_else(
+                || balerx_core::agent::HOME_REQUIRED.to_string(),
+                |path| path.display().to_string(),
+            );
+            println!("policy: {path} (valid)");
+            println!(
+                "  fail_open={} timeout_ms={} (effective)",
+                policy.global.fail_open, policy.global.timeout_ms
+            );
+        }
+        PolicyFile::Empty { path } => {
+            println!("policy: {} (empty)", path.display());
+            eprintln!("warning: policy file is empty");
+            policy_failed = true;
+        }
+        PolicyFile::Invalid { path, message } => {
+            println!("policy: {} (invalid)", path.display());
+            eprintln!("warning: policy file is invalid: {message}");
+            policy_failed = true;
+        }
     }
     let status = HookInstaller::new().status();
     println!(
@@ -1595,7 +1677,69 @@ fn run_doctor() -> Result<()> {
             "Guard hook binary is missing or not executable. Reinstall with: balerx guard install claude-code or balerx guard install cursor"
         );
     }
+    if policy_failed {
+        anyhow::bail!("Policy file is empty or invalid");
+    }
     Ok(())
+}
+
+fn loaded_or_default(file: &PolicyFile) -> Policy {
+    match file {
+        PolicyFile::Loaded(policy) => policy.clone(),
+        _ => Policy::default_policy(),
+    }
+}
+
+struct HookStdin {
+    raw: String,
+    oversized: bool,
+}
+
+fn read_hook_stdin() -> Result<HookStdin> {
+    let mut buf = Vec::new();
+    let read = io::stdin()
+        .take(MAX_HOOK_INPUT_BYTES.saturating_add(1))
+        .read_to_end(&mut buf)?;
+    let oversized = u64::try_from(read).unwrap_or(u64::MAX) > MAX_HOOK_INPUT_BYTES;
+    let raw = if oversized {
+        String::new()
+    } else {
+        String::from_utf8_lossy(&buf).into_owned()
+    };
+    Ok(HookStdin { raw, oversized })
+}
+
+fn elapsed_ms(start: Instant) -> u64 {
+    u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX)
+}
+
+fn evaluate_hook_with_timeout(
+    event_type: &str,
+    raw: &str,
+    policy: &Policy,
+    start: Instant,
+) -> balerx_core::hook_input::HookOutcome {
+    let budget = Duration::from_millis(policy.global.timeout_ms);
+    if start.elapsed() >= budget {
+        return decide_timeout(event_type, policy);
+    }
+    let remaining = budget.saturating_sub(start.elapsed());
+    let parsed = serde_json::from_str::<serde_json::Value>(raw);
+    let event_owned = event_type.to_string();
+    let policy_owned = policy.clone();
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let elapsed = elapsed_ms(start);
+        let outcome = match parsed {
+            Ok(value) => decide_payload(&event_owned, &value, &policy_owned, elapsed),
+            Err(_) => decide_unreadable(&event_owned, &policy_owned),
+        };
+        let _ = tx.send(outcome);
+    });
+    match rx.recv_timeout(remaining) {
+        Ok(outcome) if start.elapsed() < budget => outcome,
+        _ => decide_timeout(event_type, policy),
+    }
 }
 
 fn print_completions(shell: Shell) {

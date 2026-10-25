@@ -134,14 +134,14 @@ Cursor always receives exit code 0 and a permission object:
 
 `balerx hook`:
 
-1. Reads one JSON event on stdin.
-2. Loads `~/.balerx/policy.yaml`, or the file in `BALERX_POLICY`. A missing file uses the built-in policy.
+1. Reads one JSON event on stdin. A body larger than 1 MB returns `ask` and is not parsed.
+2. Loads `~/.balerx/policy.yaml`, or the file in `BALERX_POLICY`. A missing file uses the built-in policy. A present empty or unreadable file fails closed: the hook returns `ask` and writes a warning to stderr. It does not fall back to the built-in fail-open default.
 3. Checks whether the resource is a planted canary. A canary is denied.
 4. Matches paths, including `.env*` files, `.ssh/id_*`, and `.pem`, plus shell tokens such as `cat .env`.
-5. Appends the decision to the activity log. The `agent` field is `claude-code` or `cursor`. The `resource` field is the path or command target, not the whole payload.
+5. Appends the decision to the activity log. The `agent` field is `claude-code` or `cursor`. The `resource` field is the path or command target, not the whole payload. When `fail_open` allows after a timeout or invalid JSON, that allow is also written to the activity log and stderr.
 6. Writes the agent's native decision on stdout.
 
-`global.timeout_ms` (default 50) is the hook's own budget. When evaluation takes longer, `global.fail_open` chooses the decision: true allows the action, false denies it. The same choice applies when stdin is not valid JSON. The activity log is `activity.jsonl` under the OS data directory (`~/.local/share/balerx/logs/` on Linux). `BALERX_DATA_DIR` overrides that directory.
+`global.timeout_ms` (default 50) is a wall-clock budget that starts when the hook process starts and is checked after stdin closes. A stdin that never closes can still hang, as in 0.1.6. When the remaining budget is already gone, or evaluation exceeds what is left, `global.fail_open` chooses the decision: true allows the action, false denies it. The same choice applies when stdin is not valid JSON. Omitting `global` or writing `global: {}` uses `fail_open: true` and `timeout_ms: 50`. An empty, comment-only, or unreadable policy file is not covered by `fail_open`; that case is always `ask`. The activity log is `activity.jsonl` under the OS data directory (`~/.local/share/balerx/logs/` on Linux). `BALERX_DATA_DIR` overrides that directory.
 
 ## Host timeout behavior
 

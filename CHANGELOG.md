@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## [0.1.7] - 2026-10-25
+
+- `balerx --version` prints `balerx 0.1.7`.
+- `balerx setup` and `balerx policy init` print `v0.1.7` on the banner. `install.sh` and `install.ps1` print the same banner on the Installed screen.
+- Homebrew and winget manifests name scanner 0.1.7. A `v0.1.7` tag does not need those checksums filled in git. The release workflow writes them after the archives exist.
+- `balerx version --check` and `balerx self-update --check` print `balerx 0.1.7 is up to date` when this build matches the latest stable GitHub release. A local build newer than that release prints `balerx 0.1.7 is ahead of the latest release` and the published version in parentheses.
+
+### Fixed
+
+- Guard hook fail-safe: an empty or unreadable `policy.yaml` no longer falls back to the built-in fail-open default. The hook returns ask and writes a warning to stderr. A missing file still uses the built-in default. Omitting `global`, or writing `global: {}`, uses fail_open true and timeout_ms 50. Comment-only or YAML-null files are empty and fail closed. `timeout_ms` starts at process start and is checked after stdin closes; a stdin that never closes can still hang. A slow evaluation returns the configured fail-open or fail-closed decision. Stdin larger than 1 MB returns ask. When fail_open allows after a timeout or unreadable JSON, that allow is written to the activity log and stderr. `balerx doctor` parses the policy file, prints the effective fail_open and timeout_ms, and exits 1 when the file is empty or invalid. `balerx policy edit` keeps `global.fail_open` and `timeout_ms`. A policy with no rules still allows every action.
+
 ## [0.1.6] - 2026-10-24
 
 - `balerx --version` prints `balerx 0.1.6`.

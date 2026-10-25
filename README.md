@@ -11,7 +11,7 @@ The scanner does not start MCP servers. It does not read your prompts. A normal 
 
 ![balerx scan demo](docs/assets/demo.gif)
 
-The clip is a fake home at `/home/demo`: a Cursor config, a Claude Code config, and an MCP server with a risky setting. `docs/demo.tape` reproduces it with [vhs](https://github.com/charmbracelet/vhs). The recording shows `balerx 0.1.4`. This tree's `balerx --version` prints `balerx 0.1.6`. The text sample below is the report shape.
+The clip is a fake home at `/home/demo`: a Cursor config, a Claude Code config, and an MCP server with a risky setting. `docs/demo.tape` reproduces it with [vhs](https://github.com/charmbracelet/vhs). The recording shows `balerx 0.1.4`. This tree's `balerx --version` prints `balerx 0.1.7`. The text sample below is the report shape.
 
 ## Privacy
 
@@ -23,11 +23,11 @@ Nothing is uploaded unless you run `balerx upload` or `balerx policy pull` with 
 
 ## Install
 
-Supported platforms are Windows, macOS, and Linux. The commands are the same on each. Prebuilt binaries are GitHub Releases. The current scanner version is 0.1.6.
+Supported platforms are Windows, macOS, and Linux. The commands are the same on each. Prebuilt binaries are GitHub Releases. The current scanner version is 0.1.7.
 
 ### Prebuilt binary
 
-`BALERX_REPO` defaults to `wrjewski/balerx`. The scripts download `https://github.com/wrjewski/balerx/releases/latest/download/` and check `SHA256SUMS` before installing. Set `BALERX_VERSION` (for example `0.1.6`) to download that tag instead of the latest release. If `cosign` is on `PATH`, the script also verifies `SHA256SUMS.bundle` (keyless Sigstore). Without `cosign`, the checksum check is the whole verification. If the checksum file is missing, the script prints the `cargo install` command below and exits.
+`BALERX_REPO` defaults to `wrjewski/balerx`. The scripts download `https://github.com/wrjewski/balerx/releases/latest/download/` and check `SHA256SUMS` before installing. Set `BALERX_VERSION` (for example `0.1.7`) to download that tag instead of the latest release. If `cosign` is on `PATH`, the script also verifies `SHA256SUMS.bundle` (keyless Sigstore). Without `cosign`, the checksum check is the whole verification. If the checksum file is missing, the script prints the `cargo install` command below and exits.
 
 Linux or macOS, into `$HOME/.local/bin`:
 
@@ -73,14 +73,14 @@ cargo build --locked --release
 .\target\release\balerx.exe --version
 ```
 
-`balerx 0.1.6` is the expected first line. Add `target/release` to your `PATH`, or copy the binary to a directory already on `PATH`.
+`balerx 0.1.7` is the expected first line. Add `target/release` to your `PATH`, or copy the binary to a directory already on `PATH`.
 
 `balerx setup` and `balerx policy init` print a banner before the checklist. A color terminal at least 70 columns wide shows the dragon mark and a BALERX GATE wordmark. A narrower terminal prints one line. `NO_COLOR`, `--no-color`, and a pipe print this plain text. `balerx scan`, `balerx hook`, `--help`, and `--version` leave the banner out. The installers print the same banner on the Installed screen.
 
 ```text
 Balerx Gate
 Security for AI agents
-v0.1.6
+v0.1.7
 ```
 
 ## Quick start
@@ -180,7 +180,7 @@ Flags below are the ones `balerx <command> --help` prints. `-h` and `--help` exi
 | `balerx scan --no-color` | Disable color. Same as `NO_COLOR`. |
 | `balerx scan --exclude <PATH>` | Drop findings under this path. Repeat the flag for more than one path. |
 | `balerx scan --baseline <FILE>` | Hide findings listed in a JSON file: `{"ignore":[{"rule_id":"MCP-REMOTE-001","resource":".cursor/mcp.json"}]}`. `rule_id` is the rule code. |
-| `balerx doctor` | Print the version, data directory, Guard hook state, and policy path. Offline. Exits 0 when the data directory is usable. Same hook-binary check as `guard status`. |
+| `balerx doctor` | Print the version, data directory, Guard hook state, and policy path. Parses the policy file. Empty or invalid YAML exits 1. A missing file is the built-in default. Offline. Exits 0 when the data directory is usable and the policy is missing or valid. Same hook-binary check as `guard status`. |
 | `balerx completions <SHELL>` | Print a completion script for `bash`, `zsh`, `fish`, or `powershell`. |
 | `balerx version` | Print the version. `balerx --version` and `-V` do the same and stay offline. |
 | `balerx version --check` | Compare this version with the latest stable GitHub release. One request. Off unless you pass `--check`. `--json` prints the result. |
@@ -194,7 +194,7 @@ Flags below are the ones `balerx <command> --help` prints. `-h` and `--help` exi
 | `balerx guard uninstall <AGENT>` | Remove only Balerx hook commands for one agent. Other hooks stay. No backup is restored. |
 | `balerx uninstall` | Remove Balerx hook commands from Claude Code and Cursor. A command matches when it runs the `balerx` binary, or `balerx.exe`, with a `hook` argument. `my-balerx-webhook.sh` stays. Asks first. `--yes` skips the question. A pipe without `--yes` changes nothing. Without `--purge`, policy and logs stay. `--purge` deletes known policy files and `logs/activity.jsonl`. Unknown files stay. A custom data directory is not removed. Offline. |
 | `balerx guard status` | Show install state, `fail_open`, `timeout_ms`, and the log path. Exits non-zero when an installed hook binary is missing or not executable. PowerShell `& "..."` paths are unescaped; POSIX paths keep a backtick in the directory. |
-| `balerx hook --event-type <EVENT_TYPE>` | Read one JSON event on stdin and print the agent's native decision (`permissionDecision` for Claude Code, `permission` for Cursor), including `ask`. Agents call this. |
+| `balerx hook --event-type <EVENT_TYPE>` | Read one JSON event on stdin (at most 1 MB) and print the agent's native decision (`permissionDecision` for Claude Code, `permission` for Cursor), including `ask`. A larger body returns ask. An empty or unreadable policy file fails closed with ask. Agents call this. |
 | `balerx log view` | Show the local activity log. Default `--limit` is 50. |
 | `balerx log view -l, --limit <N>` | Show at most N entries. |
 | `balerx log view -a, --agent <AGENT>` | Keep entries whose agent field equals this string. |
@@ -211,7 +211,7 @@ Flags below are the ones `balerx <command> --help` prints. `-h` and `--help` exi
 | `balerx setup` | Print the Balerx Gate banner, then write `~/.balerx/policy.yaml` from a checklist. Offline. `--yes` uses the balanced preset. `--preset strict\|balanced\|minimal` selects one. An existing file requires `--replace`, which copies it to `policy.yaml.bak` first. |
 | `balerx policy init` | Same as `balerx setup`. |
 | `balerx policy show` | Print the active policy. A missing file prints the built-in policy. |
-| `balerx policy edit` | Open the checklist pre-filled from the current file. |
+| `balerx policy edit` | Open the checklist pre-filled from the current file. Keeps `global.fail_open` and `timeout_ms`. |
 | `balerx policy pull --api-url <URL>` | Download the organization policy. Requires `BALERX_API_KEY` or `--api-key -` from stdin. |
 | `balerx policy pull --output <PATH>` | Write the policy somewhere other than `~/.balerx/policy.yaml`. |
 
@@ -267,7 +267,7 @@ balerx upload --scan scan.json
 
 A successful scan upload prints `Uploaded scan scan.json`. A successful activity upload prints `Uploaded N activity events from <path>`. A successful policy pull prints `Wrote organization policy to <path>`. A rejected request prints `Upload failed:` or `Policy pull failed:` and exits 1.
 
-The local Guard policy lives at `~/.balerx/policy.yaml` (your user profile on Windows). `balerx setup` writes it. Until that file exists, Guard uses a built-in policy. There is no separate scanner config file.
+The local Guard policy lives at `~/.balerx/policy.yaml` (your user profile on Windows). `balerx setup` writes it. Until that file exists, Guard uses a built-in policy. A present empty or unreadable file fails closed with ask. `timeout_ms` is a wall-clock budget. There is no separate scanner config file.
 
 ## CI
 
@@ -297,7 +297,7 @@ jobs:
           sarif-file: balerx.sarif
 ```
 
-`version` pins a release (`0.1.6`). Leave it empty to use the latest release. The action lives at `.github/actions/scan` in this repository.
+`version` pins a release (`0.1.7`). Leave it empty to use the latest release. The action lives at `.github/actions/scan` in this repository.
 
 ## Agents and rules
 
