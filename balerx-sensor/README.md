@@ -19,11 +19,11 @@ Nothing is uploaded unless you run `balerx upload` or `balerx policy pull` with 
 
 ## Install
 
-Supported platforms are Windows, macOS, and Linux. The commands are the same on each. Prebuilt binaries are GitHub Releases. The current scanner version is 0.1.7.
+Supported platforms are Windows, macOS, and Linux. The commands are the same on each. Prebuilt binaries are GitHub Releases. The current scanner version is 0.1.8.
 
 ### Prebuilt binary
 
-`BALERX_REPO` defaults to `wrjewski/balerx`. The scripts download `https://github.com/wrjewski/balerx/releases/latest/download/` and check `SHA256SUMS` before installing. Set `BALERX_VERSION` (for example `0.1.7`) to download that tag instead of the latest release. If `cosign` is on `PATH`, the script also verifies `SHA256SUMS.bundle` (keyless Sigstore). Without `cosign`, the checksum check is the whole verification. If the checksum file is missing, the script prints the `cargo install` command below and exits.
+`BALERX_REPO` defaults to `wrjewski/balerx`. The scripts download `https://github.com/wrjewski/balerx/releases/latest/download/` and check `SHA256SUMS` before installing. Set `BALERX_VERSION` (for example `0.1.8`) to download that tag instead of the latest release. If `cosign` is on `PATH`, the script also verifies `SHA256SUMS.bundle` (keyless Sigstore). Without `cosign`, the checksum check is the whole verification. If the checksum file is missing, the script prints the `cargo install` command below and exits.
 
 Linux or macOS, into `$HOME/.local/bin`:
 
@@ -37,7 +37,7 @@ Windows, into `%LOCALAPPDATA%\balerx` (`balerx.exe`):
 
 ```powershell
 Invoke-WebRequest "https://raw.githubusercontent.com/wrjewski/balerx/main/install.ps1" -OutFile install.ps1
-powershell -File .\install.ps1
+powershell -ExecutionPolicy Bypass -File .\install.ps1
 balerx --version
 ```
 
@@ -67,14 +67,14 @@ cargo build --locked --release
 .\target\release\balerx.exe --version
 ```
 
-`balerx 0.1.7` is the expected first line. Add `target/release` to your `PATH`, or copy the binary to a directory already on `PATH`.
+`balerx 0.1.8` is the expected first line. Add `target/release` to your `PATH`, or copy the binary to a directory already on `PATH`.
 
 `balerx setup` and `balerx policy init` print a banner before the checklist. A color terminal at least 70 columns wide shows the dragon mark and a BALERX GATE wordmark. A narrower terminal prints one line. `NO_COLOR`, `--no-color`, and a pipe print this plain text. `balerx scan`, `balerx hook`, `--help`, and `--version` leave the banner out. The installers print the same banner on the Installed screen.
 
 ```text
 Balerx Gate
 Security for AI agents
-v0.1.7
+v0.1.8
 ```
 
 ## Quick start
@@ -178,8 +178,8 @@ Flags below are the ones `balerx <command> --help` prints. `-h` and `--help` exi
 | `balerx completions <SHELL>` | Print a completion script for `bash`, `zsh`, `fish`, or `powershell`. |
 | `balerx version` | Print the version. `balerx --version` and `-V` do the same and stay offline. |
 | `balerx version --check` | Compare this version with the latest stable GitHub release. One request. Off unless you pass `--check`. `--json` prints the result. |
-| `balerx self-update` | Print the current version and the public install command. It does not download or replace the binary. |
-| `balerx self-update --check` | Same release check as `balerx version --check`. `--json` requires `--check`. |
+| `balerx self-update` | Print the current version and the public install command for this OS. Windows prints the PowerShell installer. macOS and Linux print curl and sh. It does not download or replace the binary. |
+| `balerx self-update --check` | Same release check as `balerx version --check`. The `Update:` line and `--json` `install_command` match this OS. `--json` requires `--check`. |
 | `balerx lock` | Write `balerx.lock` in the current directory. MCP servers, a config content hash of the raw config, and home-relative paths are recorded. Command and args are stored redacted. The hostname is omitted. |
 | `balerx lock -o, --output <PATH>` | Write the lockfile somewhere else. |
 | `balerx diff` | Compare the current machine with `balerx.lock`, including MCP servers that were added, removed, or changed. |
@@ -291,7 +291,7 @@ jobs:
           sarif-file: balerx.sarif
 ```
 
-`version` pins a release (`0.1.7`). Leave it empty to use the latest release. The action lives at `.github/actions/scan` in https://github.com/wrjewski/balerx.
+`version` pins a release (`0.1.8`). Leave it empty to use the latest release. The action lives at `.github/actions/scan` in https://github.com/wrjewski/balerx.
 
 ## Agents and rules
 
@@ -375,6 +375,8 @@ The activity log is `activity.jsonl` under the OS local data directory:
 **Windows SmartScreen.** Release binaries are not Authenticode-signed. `SHA256SUMS` is signed with keyless Sigstore. Windows may say it protected your PC. Choose More info, then Run anyway, or build from source with `cargo build --locked --release` and run `target\release\balerx.exe`.
 
 **Proxy.** `balerx scan`, `setup`, `uninstall`, `policy show`, `policy edit`, `doctor`, `completions`, and `self-update` without `--check` do not use the network. `balerx upload` and `balerx policy pull` use the first of `ALL_PROXY`, `HTTPS_PROXY`, and `HTTP_PROXY` (lowercase names work too). `version --check` and `self-update --check` use those same variables for one request to `api.github.com`. `NO_PROXY` skips matching hosts. The Windows system proxy setting is not read. A proxy that refuses an upload or policy pull fails that command with `Upload failed:` or `Policy pull failed:`. A refused proxy on the update check prints a message and exits 0.
+
+**`self-update` printed a curl command on Windows.** PowerShell `curl` is an alias for `Invoke-WebRequest` and rejects `-fsSL`. `install.sh` is not for Windows. `balerx self-update` and `version --check` now print `Invoke-WebRequest "https://raw.githubusercontent.com/wrjewski/balerx/main/install.ps1" -OutFile install.ps1; powershell -ExecutionPolicy Bypass -File .\install.ps1`. `-ExecutionPolicy Bypass` applies only to that one installer process. macOS and Linux still print the curl/sh command. The `Release notes:` line is unchanged.
 
 **`install.sh` says there is no release.** The checksum download failed. Build from source with the `cargo install` command above.
 

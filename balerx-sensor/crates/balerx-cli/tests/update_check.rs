@@ -47,9 +47,11 @@ fn version_flags_stay_offline_and_plain() {
 fn self_update_without_check_prints_the_install_command() {
     let text = stdout(&["self-update"]);
     assert!(text.contains("This command does not download or replace the binary."));
-    assert!(text.contains(
+    assert!(text.contains(if cfg!(windows) {
+        r#"Invoke-WebRequest "https://raw.githubusercontent.com/wrjewski/balerx/main/install.ps1" -OutFile install.ps1; powershell -ExecutionPolicy Bypass -File .\install.ps1"#
+    } else {
         "curl -fsSL https://raw.githubusercontent.com/wrjewski/balerx/main/install.sh -o install.sh && sh install.sh"
-    ));
+    }));
     assert!(!text.contains("api.github.com"));
     assert!(!text.contains("new version"));
     assert_eq!(text, stdout(&["self-update", "--no-color"]));
@@ -74,7 +76,7 @@ fn help_lists_the_opt_in_check_and_common_commands() {
     assert!(root.contains("self-update"));
     assert!(root.contains("--check"));
     assert!(root.contains("Print this version"));
-    assert!(root.contains("Print the install command"));
+    assert!(root.contains("Print the install command for this OS"));
     assert!(!root.contains(
         "Check GitHub for a newer release with --check. Opt-in: nothing is checked unless you ask"
     ));
@@ -111,6 +113,11 @@ fn help_lists_the_opt_in_check_and_common_commands() {
             "missing opt-in sentence in {args:?}\n{raw}"
         );
     }
+
+    let self_update_help = collapsed(&stdout(&["self-update", "--help"]));
+    assert!(self_update_help.contains("Windows prints the PowerShell installer"));
+    assert!(self_update_help.contains("-ExecutionPolicy Bypass"));
+    assert!(self_update_help.contains("macOS and Linux print curl and sh"));
 
     let doctor = run(&["doctor"], false);
     let doctor_out = String::from_utf8_lossy(&doctor.stdout);

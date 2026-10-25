@@ -11,7 +11,25 @@ const NOTES_PREFIX: &str = "https://github.com/wrjewski/balerx/releases/";
 const CHECK_TIMEOUT: Duration = Duration::from_secs(5);
 const MAX_BODY_BYTES: u64 = 256 * 1024;
 
-pub(crate) const INSTALL_COMMAND: &str = "curl -fsSL https://raw.githubusercontent.com/wrjewski/balerx/main/install.sh -o install.sh && sh install.sh";
+const UNIX_INSTALL_COMMAND: &str = "curl -fsSL https://raw.githubusercontent.com/wrjewski/balerx/main/install.sh -o install.sh && sh install.sh";
+const WINDOWS_INSTALL_COMMAND: &str = r#"Invoke-WebRequest "https://raw.githubusercontent.com/wrjewski/balerx/main/install.ps1" -OutFile install.ps1; powershell -ExecutionPolicy Bypass -File .\install.ps1"#;
+
+/// Public installer one-liner for the given OS.
+///
+/// `windows == true` is the PowerShell form from the README, including
+/// `-ExecutionPolicy Bypass` for that one installer process. `false` is curl/sh.
+/// Tests pass both flags so every CI OS covers both variants.
+pub(crate) fn install_command(windows: bool) -> &'static str {
+    if windows {
+        WINDOWS_INSTALL_COMMAND
+    } else {
+        UNIX_INSTALL_COMMAND
+    }
+}
+
+fn host_install_command() -> &'static str {
+    install_command(cfg!(windows))
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 struct Semver {
@@ -56,15 +74,20 @@ struct CheckView {
 }
 
 pub(crate) fn install_instructions() -> String {
+    install_instructions_for(cfg!(windows))
+}
+
+fn install_instructions_for(windows: bool) -> String {
     format!(
         "\
 balerx {version}
 This command does not download or replace the binary.
 Install a published release from https://github.com/wrjewski/balerx :
-  {INSTALL_COMMAND}
-Pin a release with BALERX_VERSION, for example BALERX_VERSION=0.1.7.
+  {command}
+Pin a release with BALERX_VERSION, for example BALERX_VERSION=0.1.8.
 SHA256SUMS is checked always. If cosign is on PATH, the script also verifies the keyless Sigstore bundle.",
         version = env!("CARGO_PKG_VERSION"),
+        command = install_command(windows),
     )
 }
 
@@ -103,7 +126,7 @@ fn run_check(json: bool) {
     let current = env!("CARGO_PKG_VERSION");
     let view = match fetch_latest_body() {
         Ok(body) => evaluate(current, &body),
-        Err(message) => error_view(current, &message),
+        Err(message) => with_install_command(error_view(current, &message), host_install_command()),
     };
     emit(&view, json);
 }
@@ -257,27 +280,34 @@ fn notes_url(tag: &str, html_url: Option<&str>) -> String {
 }
 
 fn evaluate(current_raw: &str, body: &str) -> CheckView {
-    if parse_stable_semver(current_raw).is_none() {
-        return error_view(
+    evaluate_for(current_raw, body, cfg!(windows))
+}
+
+fn evaluate_for(current_raw: &str, body: &str, windows: bool) -> CheckView {
+    let command = install_command(windows);
+    let view = if parse_stable_semver(current_raw).is_none() {
+        error_view(
             current_raw,
             "Could not check for updates: this build's version is not a stable release.",
-        );
-    }
-    match parse_latest_release(body) {
-        ParsedRelease::Unreadable => error_view(
-            current_raw,
-            "Could not check for updates: the GitHub response was not a release.",
-        ),
-        ParsedRelease::Ignored => ignored_view(current_raw),
-        ParsedRelease::Stable(release) => {
-            let current = parse_stable_semver(current_raw).expect("checked above");
-            match release.version.cmp(&current) {
-                std::cmp::Ordering::Greater => update_view(current_raw, &release),
-                std::cmp::Ordering::Less => ahead_view(current_raw, &release),
-                std::cmp::Ordering::Equal => current_view(current_raw, &release),
+        )
+    } else {
+        match parse_latest_release(body) {
+            ParsedRelease::Unreadable => error_view(
+                current_raw,
+                "Could not check for updates: the GitHub response was not a release.",
+            ),
+            ParsedRelease::Ignored => ignored_view(current_raw),
+            ParsedRelease::Stable(release) => {
+                let current = parse_stable_semver(current_raw).expect("checked above");
+                match release.version.cmp(&current) {
+                    std::cmp::Ordering::Greater => update_view(current_raw, &release, command),
+                    std::cmp::Ordering::Less => ahead_view(current_raw, &release),
+                    std::cmp::Ordering::Equal => current_view(current_raw, &release),
+                }
             }
         }
-    }
+    };
+    with_install_command(view, command)
 }
 
 fn error_view(current: &str, message: &str) -> CheckView {
@@ -332,11 +362,10 @@ fn current_view(current: &str, release: &StableRelease) -> CheckView {
     )
 }
 
-fn update_view(current: &str, release: &StableRelease) -> CheckView {
+fn update_view(current: &str, release: &StableRelease, command: &'static str) -> CheckView {
     let latest = release.version.dotted();
-    let message = format!(
-        "A new version is available: {latest} (you have {current}). Update: {INSTALL_COMMAND}"
-    );
+    let message =
+        format!("A new version is available: {latest} (you have {current}). Update: {command}");
     let notes = format!("Release notes: {}", release.notes_url);
     view(
         current,
@@ -347,6 +376,11 @@ fn update_view(current: &str, release: &StableRelease) -> CheckView {
         message.clone(),
         vec![message, notes],
     )
+}
+
+fn with_install_command(mut view: CheckView, command: &'static str) -> CheckView {
+    view.json.install_command = command;
+    view
 }
 
 fn view(
@@ -365,7 +399,7 @@ fn view(
             latest,
             update_available,
             release_url,
-            install_command: INSTALL_COMMAND,
+            install_command: host_install_command(),
             message,
             ok,
         },
@@ -375,8 +409,9 @@ fn view(
 #[cfg(test)]
 mod tests {
     use super::{
-        describe_transport_error, evaluate, install_instructions, parse_latest_release,
-        parse_stable_semver, ParsedRelease, INSTALL_COMMAND,
+        describe_transport_error, evaluate, evaluate_for, host_install_command, install_command,
+        install_instructions, install_instructions_for, parse_latest_release, parse_stable_semver,
+        ParsedRelease,
     };
 
     fn release_json(tag: &str, draft: bool, prerelease: bool, html_url: &str) -> String {
@@ -423,9 +458,11 @@ mod tests {
         assert_eq!(
             view.lines[0],
             format!(
-                "A new version is available: 0.1.5 (you have 0.1.4). Update: {INSTALL_COMMAND}"
+                "A new version is available: 0.1.5 (you have 0.1.4). Update: {}",
+                host_install_command()
             )
         );
+        assert_eq!(view.json.install_command, host_install_command());
         assert_eq!(
             view.lines[1],
             "Release notes: https://github.com/wrjewski/balerx/releases/tag/v0.1.5"
@@ -521,11 +558,83 @@ mod tests {
     }
 
     #[test]
+    fn install_command_selects_unix_and_windows() {
+        let unix = install_command(false);
+        assert_eq!(
+            unix,
+            "curl -fsSL https://raw.githubusercontent.com/wrjewski/balerx/main/install.sh -o install.sh && sh install.sh"
+        );
+        assert!(unix.contains("install.sh"));
+        assert!(unix.contains("curl -fsSL"));
+        assert!(!unix.contains("install.ps1"));
+        assert!(!unix.contains("Invoke-WebRequest"));
+
+        let windows = install_command(true);
+        assert_eq!(
+            windows,
+            r#"Invoke-WebRequest "https://raw.githubusercontent.com/wrjewski/balerx/main/install.ps1" -OutFile install.ps1; powershell -ExecutionPolicy Bypass -File .\install.ps1"#
+        );
+        assert!(windows.contains("install.ps1"));
+        assert!(windows.contains("Invoke-WebRequest"));
+        assert!(windows.contains(r"powershell -ExecutionPolicy Bypass -File .\install.ps1"));
+        assert!(!windows.contains("install.sh"));
+        assert!(!windows.contains("curl"));
+        assert!(!windows.contains("-fsSL"));
+        assert_ne!(unix, windows);
+        assert_eq!(host_install_command(), install_command(cfg!(windows)));
+    }
+
+    #[test]
+    fn update_message_uses_os_install_command() {
+        let body = include_str!("../tests/fixtures/github-latest-release.json");
+        let unix = evaluate_for("0.1.4", body, false);
+        let windows = evaluate_for("0.1.4", body, true);
+        let notes = "Release notes: https://github.com/wrjewski/balerx/releases/tag/v0.1.5";
+
+        assert_eq!(
+            unix.lines[0],
+            format!(
+                "A new version is available: 0.1.5 (you have 0.1.4). Update: {}",
+                install_command(false)
+            )
+        );
+        assert_eq!(unix.lines[1], notes);
+        assert_eq!(unix.json.install_command, install_command(false));
+        assert!(unix.json.update_available);
+        assert!(!unix.lines[0].contains("Invoke-WebRequest"));
+
+        assert_eq!(
+            windows.lines[0],
+            format!(
+                "A new version is available: 0.1.5 (you have 0.1.4). Update: {}",
+                install_command(true)
+            )
+        );
+        assert_eq!(windows.lines[1], notes);
+        assert_eq!(windows.json.install_command, install_command(true));
+        assert!(windows.json.update_available);
+        assert!(windows.lines[0].contains("Invoke-WebRequest"));
+        assert!(windows.lines[0].contains("install.ps1"));
+        assert!(!windows.lines[0].contains("install.sh"));
+        assert!(!windows.lines[0].contains("-fsSL"));
+    }
+
+    #[test]
     fn install_text_stays_offline() {
-        let text = install_instructions();
-        assert!(text.contains(&format!("  {INSTALL_COMMAND}")));
-        assert!(text.contains("does not download or replace the binary"));
-        assert!(!text.contains("api.github.com"));
-        assert!(text.starts_with(&format!("balerx {}\n", env!("CARGO_PKG_VERSION"))));
+        let host = install_instructions();
+        assert!(host.contains(&format!("  {}", host_install_command())));
+        assert!(host.contains("does not download or replace the binary"));
+        assert!(!host.contains("api.github.com"));
+        assert!(host.starts_with(&format!("balerx {}\n", env!("CARGO_PKG_VERSION"))));
+
+        let unix = install_instructions_for(false);
+        assert!(unix.contains(install_command(false)));
+        assert!(!unix.contains("install.ps1"));
+        assert!(!unix.contains("api.github.com"));
+
+        let windows = install_instructions_for(true);
+        assert!(windows.contains(install_command(true)));
+        assert!(!windows.contains("install.sh"));
+        assert!(!windows.contains("api.github.com"));
     }
 }

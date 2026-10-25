@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## [0.1.8] - 2026-10-25
+
+- `balerx --version` prints `balerx 0.1.8`.
+- `balerx setup` and `balerx policy init` print `v0.1.8` on the banner. `install.sh` and `install.ps1` print the same banner on the Installed screen.
+- Homebrew and winget manifests name scanner 0.1.8. A `v0.1.8` tag does not need those checksums filled in git. The release workflow writes them after the archives exist.
+- `balerx version --check` and `balerx self-update --check` print `balerx 0.1.8 is up to date` when this build matches the latest stable GitHub release. A local build newer than that release prints `balerx 0.1.8 is ahead of the latest release` and the published version in parentheses.
+
+### Fixed
+
+- `balerx self-update` and `balerx version --check` print an OS-specific install command: PowerShell on Windows, curl and sh on macOS and Linux. The Windows command is `Invoke-WebRequest "https://raw.githubusercontent.com/wrjewski/balerx/main/install.ps1" -OutFile install.ps1; powershell -ExecutionPolicy Bypass -File .\install.ps1`. `-ExecutionPolicy Bypass` applies only to that one installer process.
+
 ## [0.1.7] - 2026-10-25
 
 - `balerx --version` prints `balerx 0.1.7`.
