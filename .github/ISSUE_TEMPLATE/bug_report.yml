@@ -14,7 +14,7 @@ body:
     attributes:
       label: Scanner version
       description: Output of `balerx --version`, or the git revision you built.
-      placeholder: 0.1.5
+      placeholder: 0.1.6
     validations:
       required: true
   - type: input

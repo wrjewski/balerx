@@ -58,7 +58,9 @@ fn installed_hook_exits_0_even_with_strict() {
     let work = temp_dir("hook-work");
     let hooks = home.join(".cursor").join("hooks.json");
     fs::create_dir_all(hooks.parent().expect("parent")).expect("dir");
-    fs::write(&hooks, r#"{"command":"balerx hook"}"#).expect("hook");
+    let binary = env!("CARGO_BIN_EXE_balerx");
+    let payload = serde_json::json!({ "command": format!("{binary} hook") });
+    fs::write(&hooks, payload.to_string()).expect("hook");
     let output = status(&home, &work, &["--strict"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
@@ -68,4 +70,64 @@ fn installed_hook_exits_0_even_with_strict() {
     );
     assert!(!stdout.contains("Not installed —"));
     assert!(stdout.contains("Cursor hooks: installed"));
+}
+
+#[test]
+fn missing_hook_binary_exits_nonzero() {
+    let home = temp_dir("missing-bin-home");
+    let work = temp_dir("missing-bin-work");
+    let hooks = home.join(".cursor").join("hooks.json");
+    fs::create_dir_all(hooks.parent().expect("parent")).expect("dir");
+    fs::write(
+        &hooks,
+        r#"{"command":"/definitely/missing/balerx hook --event-type pre_tool_use"}"#,
+    )
+    .expect("hook");
+    let output = status(&home, &work, &[]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "missing binary should fail: {stdout}\n{stderr}"
+    );
+    assert!(
+        stdout.contains("missing")
+            || stderr.contains("missing")
+            || stderr.contains("not executable"),
+        "expected a missing/not-executable message:\n{stdout}\n{stderr}"
+    );
+}
+
+#[test]
+fn doctor_exits_nonzero_when_hook_binary_missing() {
+    let home = temp_dir("doctor-missing-home");
+    let work = temp_dir("doctor-missing-work");
+    let hooks = home.join(".cursor").join("hooks.json");
+    fs::create_dir_all(hooks.parent().expect("parent")).expect("dir");
+    fs::write(
+        &hooks,
+        r#"{"command":"/definitely/missing/balerx hook --event-type pre_tool_use"}"#,
+    )
+    .expect("hook");
+    let output = Command::new(env!("CARGO_BIN_EXE_balerx"))
+        .env("HOME", &home)
+        .env("USERPROFILE", &home)
+        .current_dir(&work)
+        .arg("doctor")
+        .output()
+        .expect("doctor");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "doctor should fail: {stdout}\n{stderr}"
+    );
+    assert!(
+        stdout.contains("missing")
+            || stderr.contains("missing")
+            || stderr.contains("not executable"),
+        "expected a missing/not-executable message:\n{stdout}\n{stderr}"
+    );
 }

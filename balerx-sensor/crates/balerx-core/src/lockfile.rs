@@ -1,5 +1,6 @@
 use crate::agent::Agent;
 use crate::config::McpConfig;
+use crate::redaction::{redact_stdio, redact_url};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -139,10 +140,14 @@ impl DriftType {
                 format!("MCP server removed from {agent}: {server}")
             }
             Self::McpVersionChanged { server, old, new } => {
-                format!("MCP server {server} version changed: {old} → {new}")
+                let old_safe = crate::redaction::redact_url(old);
+                let new_safe = crate::redaction::redact_url(new);
+                format!("MCP server {server} version changed: {old_safe} → {new_safe}")
             }
             Self::McpCommandChanged { server, old, new } => {
-                format!("MCP server {server} command changed: {old} → {new}")
+                let old_safe = crate::redaction::redact_command_line(old);
+                let new_safe = crate::redaction::redact_command_line(new);
+                format!("MCP server {server} command changed: {old_safe} → {new_safe}")
             }
             Self::McpArgsChanged { server } => {
                 format!("MCP server {server} arguments changed")
@@ -232,20 +237,26 @@ impl Lockfile {
                 file_hashes.push(sha256_hex(&bytes));
                 if let Ok(config) = McpConfig::parse_file(path) {
                     for (name, server) in config.mcp_servers {
-                        let args = server.args.clone().unwrap_or_default();
-                        let command = server.command.clone().unwrap_or_default();
+                        let raw_args = server.args.clone().unwrap_or_default();
+                        let raw_command = server.command.clone().unwrap_or_default();
+                        let (redacted_command, redacted_args) =
+                            redact_stdio(&raw_command, &raw_args);
                         let canonical = serde_json::json!({
                             "name": name,
-                            "command": command,
-                            "args": args,
+                            "command": raw_command,
+                            "args": raw_args,
                             "url": server.url,
                         });
-                        let package = package_from_command(&command, &args);
+                        let mut package = package_from_command(&raw_command, &raw_args);
+                        if let Some(ref mut pkg) = package {
+                            pkg.name = redact_url(&pkg.name);
+                            pkg.version = redact_url(&pkg.version);
+                        }
                         lockfile.add_mcp_server(LockedMcpServer {
                             name,
                             agent: agent.name.clone(),
-                            command,
-                            args,
+                            command: redacted_command,
+                            args: redacted_args,
                             package,
                             config_hash: sha256_hex(canonical.to_string().as_bytes()),
                             tool_descriptions: Vec::new(),
@@ -331,27 +342,30 @@ impl Lockfile {
                 .iter()
                 .find(|s| s.name == server.name && s.agent == server.agent)
             {
-                if server.command != other_server.command {
-                    drifts.push(DriftType::McpCommandChanged {
-                        server: server.name.clone(),
-                        old: server.command.clone(),
-                        new: other_server.command.clone(),
-                    });
-                }
-                if server.args != other_server.args {
-                    drifts.push(DriftType::McpArgsChanged {
-                        server: server.name.clone(),
-                    });
-                }
-                if server.package != other_server.package {
-                    if let (Some(old_pkg), Some(new_pkg)) = (&server.package, &other_server.package)
-                    {
-                        if old_pkg.version != new_pkg.version {
-                            drifts.push(DriftType::McpVersionChanged {
-                                server: server.name.clone(),
-                                old: old_pkg.version.clone(),
-                                new: new_pkg.version.clone(),
-                            });
+                if server.config_hash != other_server.config_hash {
+                    if server.command != other_server.command {
+                        drifts.push(DriftType::McpCommandChanged {
+                            server: server.name.clone(),
+                            old: server.command.clone(),
+                            new: other_server.command.clone(),
+                        });
+                    }
+                    if server.args != other_server.args {
+                        drifts.push(DriftType::McpArgsChanged {
+                            server: server.name.clone(),
+                        });
+                    }
+                    if server.package != other_server.package {
+                        if let (Some(old_pkg), Some(new_pkg)) =
+                            (&server.package, &other_server.package)
+                        {
+                            if old_pkg.version != new_pkg.version {
+                                drifts.push(DriftType::McpVersionChanged {
+                                    server: server.name.clone(),
+                                    old: old_pkg.version.clone(),
+                                    new: new_pkg.version.clone(),
+                                });
+                            }
                         }
                     }
                 }
@@ -534,6 +548,7 @@ mod tests {
         });
         let mut current = saved.clone();
         current.mcp_servers[0].args = vec!["-y".to_string(), "server".to_string(), "/".to_string()];
+        current.mcp_servers[0].config_hash = "abc-changed".to_string();
         current.add_mcp_server(LockedMcpServer {
             name: "evil".to_string(),
             agent: "Cursor".to_string(),
@@ -664,5 +679,139 @@ mod tests {
         assert!(DriftSeverity::High > DriftSeverity::Medium);
         assert!(DriftSeverity::Medium > DriftSeverity::Low);
         assert!(DriftSeverity::Low > DriftSeverity::Info);
+    }
+
+    #[test]
+    fn old_lockfile_raw_command_does_not_spurious_drift_when_hash_matches() {
+        let user = "bob";
+        let pw = "pa55w0rd";
+        let at_host = String::from("@") + "mcp.example.com/sse";
+        let raw_command = format!("http://{user}:{pw}{at_host}");
+        let redacted_command = crate::redaction::redact_url(&raw_command);
+        assert_ne!(raw_command, redacted_command);
+
+        let hash = "same-config-hash";
+        let mut old = Lockfile::new();
+        old.add_mcp_server(LockedMcpServer {
+            name: "remote".to_string(),
+            agent: "Cursor".to_string(),
+            command: raw_command.clone(),
+            args: vec![raw_command.clone()],
+            package: None,
+            config_hash: hash.to_string(),
+            tool_descriptions: vec![],
+        });
+
+        let mut current = Lockfile::new();
+        current.add_mcp_server(LockedMcpServer {
+            name: "remote".to_string(),
+            agent: "Cursor".to_string(),
+            command: redacted_command,
+            args: vec![crate::redaction::redact_url(&raw_command)],
+            package: None,
+            config_hash: hash.to_string(),
+            tool_descriptions: vec![],
+        });
+
+        let drifts = old.diff(&current);
+        assert!(
+            !drifts
+                .iter()
+                .any(|d| matches!(d, DriftType::McpCommandChanged { .. })),
+            "same hash should not report command changed: {drifts:?}"
+        );
+        assert!(
+            !drifts
+                .iter()
+                .any(|d| matches!(d, DriftType::McpArgsChanged { .. })),
+            "same hash should not report args changed: {drifts:?}"
+        );
+    }
+
+    #[test]
+    fn command_drift_message_redacts_old_lockfile_credentials() {
+        let user = "bob";
+        let pw = "pa55w0rd";
+        let at_host = String::from("@") + "mcp.example.com/sse";
+        let raw_command = format!("http://{user}:{pw}{at_host}");
+        let new_command = "https://mcp.example.com/sse";
+
+        let drift = DriftType::McpCommandChanged {
+            server: "remote".to_string(),
+            old: raw_command,
+            new: new_command.to_string(),
+        };
+        let message = drift.message();
+        assert!(
+            !message.contains("pa55w0rd"),
+            "diff message leaked credential: {message}"
+        );
+        assert!(
+            !message.contains("bob:"),
+            "diff message leaked userinfo: {message}"
+        );
+        assert!(message.contains("mcp.example.com/sse"));
+        assert!(message.contains(new_command));
+    }
+
+    #[test]
+    fn same_hash_split_package_version_does_not_drift() {
+        let hash = "same-config-hash";
+        let marker = "Tk1";
+        let user = "tuser";
+        let pw = "Tp1";
+        let mut old = Lockfile::new();
+        old.add_mcp_server(LockedMcpServer {
+            name: "tarball-pkg".to_string(),
+            agent: "Cursor".to_string(),
+            command: "npx".to_string(),
+            args: vec!["-y".to_string()],
+            package: Some(PackageInfo {
+                name: format!("https://{user}:{pw}"),
+                version: format!("host.example.com/pkg.tgz?token={marker}"),
+                registry: "npm".to_string(),
+            }),
+            config_hash: hash.to_string(),
+            tool_descriptions: vec![],
+        });
+
+        let mut current = Lockfile::new();
+        current.add_mcp_server(LockedMcpServer {
+            name: "tarball-pkg".to_string(),
+            agent: "Cursor".to_string(),
+            command: "npx".to_string(),
+            args: vec!["-y".to_string()],
+            package: Some(PackageInfo {
+                name: "https://host.example.com/pkg.tgz?token=[REDACTED]".to_string(),
+                version: String::new(),
+                registry: "npm".to_string(),
+            }),
+            config_hash: hash.to_string(),
+            tool_descriptions: vec![],
+        });
+
+        let drifts = old.diff(&current);
+        assert!(
+            !drifts
+                .iter()
+                .any(|d| matches!(d, DriftType::McpVersionChanged { .. })),
+            "same hash should not report version changed: {drifts:?}"
+        );
+    }
+
+    #[test]
+    fn version_drift_message_redacts_schemeless_query() {
+        let marker = "Tk1";
+        let drift = DriftType::McpVersionChanged {
+            server: "tarball-pkg".to_string(),
+            old: format!("host.example.com/pkg.tgz?token={marker}"),
+            new: String::new(),
+        };
+        let message = drift.message();
+        assert!(
+            !message.contains(marker),
+            "version message leaked query value: {message}"
+        );
+        assert!(message.contains("token=[REDACTED]"));
     }
 }

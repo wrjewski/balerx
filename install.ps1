@@ -69,7 +69,7 @@ function Confirm-BalerxSignature([string]$Repo, [string]$Base, [string]$Work) {
   }
 }
 
-# Banner matches balerx-cli banner.rs for v0.1.5. Pipes, NO_COLOR, and a code page other than UTF-8 or OEM US stay plain ASCII.
+# Banner matches balerx-cli banner.rs for v0.1.6. Pipes, NO_COLOR, and a code page other than UTF-8 or OEM US stay plain ASCII.
 function Write-BalerxBanner {
   $cols = 80
   if ($env:COLUMNS -match '^\d+$') {
@@ -96,21 +96,21 @@ function Write-BalerxBanner {
   }
   if ($plain -or -not $unicode) {
     if ($cols -lt 70) {
-      Write-Host '>< Balerx Gate  v0.1.5'
+      Write-Host '>< Balerx Gate  v0.1.6'
     } else {
       Write-Host 'Balerx Gate'
       Write-Host 'Security for AI agents'
-      Write-Host 'v0.1.5'
+      Write-Host 'v0.1.6'
     }
     return
   }
   $truecolor = $env:COLORTERM -eq 'truecolor' -or $env:COLORTERM -eq '24bit'
   $esc = [string][char]27
   $narrowTrue = @(
-    '\033[38;2;176;18;46m▟█▙\033[0m Balerx Gate  \033[38;2;176;18;46mv0.1.5\033[0m'
+    '\033[38;2;176;18;46m▟█▙\033[0m Balerx Gate  \033[38;2;176;18;46mv0.1.6\033[0m'
   )
   $narrowAnsi = @(
-    '\033[38;5;124m▟█▙\033[0m Balerx Gate  \033[38;5;124mv0.1.5\033[0m'
+    '\033[38;5;124m▟█▙\033[0m Balerx Gate  \033[38;5;124mv0.1.6\033[0m'
   )
   $wideTrue = @(
     ' \033[38;2;176;18;46m        ▄██▄      \033[0m  \033[38;2;142;16;36m█\033[38;2;144;16;36m█\033[38;2;146;16;37m█\033[38;2;148;16;38m▄\033[0m \033[38;2;153;16;39m▄\033[38;2;155;16;40m█\033[38;2;157;16;40m█\033[38;2;160;17;41m▄\033[0m \033[38;2;164;17;42m█\033[0m    \033[38;2;176;18;46m█\033[38;2;178;21;49m█\033[38;2;180;25;52m█\033[38;2;183;28;56m█\033[0m \033[38;2;187;35;62m█\033[38;2;190;39;66m▀\033[38;2;192;43;69m▀\033[38;2;195;46;72m▄\033[0m \033[38;2;199;53;79m█\033[0m  \033[38;2;207;64;89m█\033[0m  '
@@ -124,7 +124,7 @@ function Write-BalerxBanner {
     ' \033[38;2;176;18;46m ███     ▄█▄   ██ \033[0m  \033[38;2;142;16;36m█\033[0m  \033[38;2;148;16;38m█\033[0m \033[38;2;153;16;39m█\033[0m  \033[38;2;160;17;41m█\033[0m  \033[38;2;166;17;43m█\033[38;2;169;17;44m█\033[0m  \033[38;2;176;18;46m█\033[0m               '
     ' \033[38;2;176;18;46m ███     ▀███▄▄██ \033[0m  \033[38;2;142;16;36m▀\033[38;2;144;16;36m█\033[38;2;146;16;37m█\033[38;2;148;16;38m▀\033[0m \033[38;2;153;16;39m█\033[0m  \033[38;2;160;17;41m█\033[0m  \033[38;2;166;17;43m█\033[38;2;169;17;44m█\033[0m  \033[38;2;176;18;46m█\033[38;2;178;21;49m█\033[38;2;180;25;52m█\033[38;2;183;28;56m█\033[0m            '
     ' \033[38;2;176;18;46m ███       ██████ \033[0m                                 '
-    ' \033[38;2;176;18;46m████        ██████\033[0m  \033[38;2;168;132;138mSecurity\033[0m \033[38;2;168;132;138mfor\033[0m \033[38;2;168;132;138mAI\033[0m \033[38;2;168;132;138magents\033[0m   \033[38;2;176;18;46mv0.1.5\033[0m'
+    ' \033[38;2;176;18;46m████        ██████\033[0m  \033[38;2;168;132;138mSecurity\033[0m \033[38;2;168;132;138mfor\033[0m \033[38;2;168;132;138mAI\033[0m \033[38;2;168;132;138magents\033[0m   \033[38;2;176;18;46mv0.1.6\033[0m'
   )
   $wideAnsi = @(
     ' \033[38;5;124m        ▄██▄      \033[0m  \033[38;5;88m█\033[38;5;88m█\033[38;5;88m█\033[38;5;88m▄\033[0m \033[38;5;88m▄\033[38;5;124m█\033[38;5;124m█\033[38;5;124m▄\033[0m \033[38;5;124m█\033[0m    \033[38;5;124m█\033[38;5;125m█\033[38;5;125m█\033[38;5;125m█\033[0m \033[38;5;125m█\033[38;5;125m▀\033[38;5;125m▀\033[38;5;161m▄\033[0m \033[38;5;167m█\033[0m  \033[38;5;167m█\033[0m  '
@@ -138,7 +138,7 @@ function Write-BalerxBanner {
     ' \033[38;5;124m ███     ▄█▄   ██ \033[0m  \033[38;5;88m█\033[0m  \033[38;5;88m█\033[0m \033[38;5;88m█\033[0m  \033[38;5;124m█\033[0m  \033[38;5;124m█\033[38;5;124m█\033[0m  \033[38;5;124m█\033[0m               '
     ' \033[38;5;124m ███     ▀███▄▄██ \033[0m  \033[38;5;88m▀\033[38;5;88m█\033[38;5;88m█\033[38;5;88m▀\033[0m \033[38;5;88m█\033[0m  \033[38;5;124m█\033[0m  \033[38;5;124m█\033[38;5;124m█\033[0m  \033[38;5;124m█\033[38;5;125m█\033[38;5;125m█\033[38;5;125m█\033[0m            '
     ' \033[38;5;124m ███       ██████ \033[0m                                 '
-    ' \033[38;5;124m████        ██████\033[0m  \033[38;5;138mSecurity\033[0m \033[38;5;138mfor\033[0m \033[38;5;138mAI\033[0m \033[38;5;138magents\033[0m   \033[38;5;124mv0.1.5\033[0m'
+    ' \033[38;5;124m████        ██████\033[0m  \033[38;5;138mSecurity\033[0m \033[38;5;138mfor\033[0m \033[38;5;138mAI\033[0m \033[38;5;138magents\033[0m   \033[38;5;124mv0.1.6\033[0m'
   )
   if ($cols -lt 70 -and $truecolor) { $chosen = $narrowTrue }
   elseif ($cols -lt 70) { $chosen = $narrowAnsi }
@@ -206,7 +206,8 @@ try {
   Write-Host "  balerx setup"
   Write-Host "  balerx scan"
   Write-Host "  balerx scan --json scan.json --sarif scan.sarif --html report.html"
-  Write-Host "  balerx upload --api-url https://balerxgate.com --api-key YOUR_INGEST_KEY --scan scan.json"
+  Write-Host "  `$env:BALERX_API_KEY = `"<key>`""
+  Write-Host "  balerx upload --api-url https://balerxgate.com --scan scan.json"
   Write-Host "Create an ingest key in Settings or Onboarding. It is shown once. See https://balerxgate.com/docs/upload"
 } finally {
   Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
